@@ -54,5 +54,7 @@ def model(N, v_l, v_max, T, first_vehicle_speed):
     plt.show()
 
 
-
+# Test
+if __name__ == "__main__":
+    model(N=5, v_l=5, v_max=10, T=50, first_vehicle_speed=8)
 
