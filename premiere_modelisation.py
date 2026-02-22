@@ -1,49 +1,66 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import random
 
-def compute_speed(v_max, d, d_min):
+'''
+- T is a time in hour 
+- v_max is a velocity in km/h 
+- l is a length in km
+- rho_max is a density in vehicle/km
+'''
+T = 0.1 # 6 minutes 
+v_max = 50 
+l = 0.005 # 5 meters
+rho_max = 1 / l
+
+def compute_speed(v_max, rho_max, rho):
     '''
     Compute vehicle speed
     args:
     - v_max: int -> maximal velocity of our model
-    - d: int -> distance between the vehicle and the vehicle in front
-    - d_min: int -> minimal distance between two vehicle
+    - rho_max: int -> maximal density of vehicle on the road
+    - rho: int -> actual density of vehicle on the road
     '''
-    speed = v_max * (d / d_min - 1)
+    speed = v_max * (1 - rho / rho_max)
     return max(0, min(speed, v_max))
 
-def model(N, v_l, v_max, T, first_vehicle_speed):
+def model(N, time_actualisation):
     '''
     Print vehicle evolution over time
     args:
     - N: int -> number of vehicles
-    - v_l: int -> length of the vehicles
-    - v_max: int -> maximal velocity of our model
-    - T: int -> time of study
-    - first_vehicle_speed: int -> speed of the first vehicle 
+    - time_actualisation: int -> time between each actualisation
     '''
-    if T <= 1:
-        raise ValueError('Period must be > 1')
+    time_steps = int(T / time_actualisation)
+    t_tab = np.linspace(0, T, time_steps)
+    x_tab = np.zeros((N, time_steps))
+    v_tab = np.zeros((N, time_steps))
 
-    if first_vehicle_speed < 0 or first_vehicle_speed > v_max:
-        raise ValueError('First vehicle speed must be between 0 and v_max.')
-    
-    x_tab = np.array([[0 for i in range(T)] for i in range(N)])
-    v_tab = np.array([[0 for i in range(T)] for i in range(N)])
     for i in range(N):
-        x_tab[i][0] = i * v_l
-        v_tab[N-1][0] = v_max
-    t_tab = np.linspace(0, T, T)
-    v_tab[N-1] = first_vehicle_speed
+        if i == 0:
+            x_tab[i][0] = 0
+        else:
+            x_tab[i][0] = x_tab[i - 1][0] + random.uniform(5 * l, 10 * l)
+    
+    for i in range(N):
+        if i == N - 1:
+            v_tab[i][0] = v_max
+        else:
+            distance = x_tab[i + 1][0] - x_tab[i][0]
+            v_tab[i][0] = compute_speed(v_max, rho_max, 1 / distance)
     t = 1
-    while t < T :
+    while t < time_steps :
         for i in range(N):
-            x_tab[N - 1 - i][t] = x_tab[N - 1 - i][t-1] + v_tab[N - 1 - i][t-1]
-            if i == 0:
-                v_tab[N - 1 - i][t] = first_vehicle_speed
+            x_tab[i][t] = x_tab[i][t-1] + v_tab[i][t-1] * time_actualisation
+        
+        for i in range(N):
+            if i == N - 1:  
+                v_tab[i][t] = v_max
             else:
-                v_tab[N - 1 - i][t] = compute_speed(v_max, x_tab[N - i][t] - x_tab[N - 1 - i][t], v_l)
+                distance = x_tab[i + 1][t] - x_tab[i][t]
+                v_tab[i][t] = compute_speed(v_max, rho_max, 1 / distance)
         t += 1
+
     plt.figure(figsize=(10,6))
     for i in range(N):
         plt.plot(x_tab[i], t_tab, label = f'Position of vehicle {i+1}')
@@ -54,7 +71,5 @@ def model(N, v_l, v_max, T, first_vehicle_speed):
     plt.show()
 
 
-# Test
-if __name__ == "__main__":
-    model(N=5, v_l=5, v_max=10, T=50, first_vehicle_speed=8)
-
+if __name__ == '__main__':
+    model(N = 5, time_actualisation = 5 / 3600)
