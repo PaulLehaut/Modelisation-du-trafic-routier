@@ -31,7 +31,7 @@ def model(N, v_l, v_max, T, first_vehicle_speed):
     x_tab = np.array([[0 for i in range(T)] for i in range(N)])
     v_tab = np.array([[0 for i in range(T)] for i in range(N)])
     for i in range(N):
-        x_tab[i][0] = i * v_l
+        x_tab[i][0] = (i**2) * (v_l) 
         v_tab[N-1][0] = v_max
     t_tab = np.linspace(0, T, T)
     v_tab[N-1] = first_vehicle_speed
@@ -54,5 +54,10 @@ def model(N, v_l, v_max, T, first_vehicle_speed):
     plt.show()
 
 
+# Rq : Il faut first_vehicle_speed = v_max sinon pb
 
-
+N = 10
+v_l = 5
+v_max, first_vehicle_speed = 100, 100
+T = 10
+model(N, v_l, v_max, T, first_vehicle_speed)
