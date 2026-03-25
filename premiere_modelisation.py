@@ -94,6 +94,11 @@ dt = 0.9 * dx / v_max
 nt = int(T / dt)
 
 def compute_rho_Greenshields(rho):
+    '''
+    Compute f(rho)
+    args:
+    - rho: int -> actual density of vehicle on the road
+    '''
     return rho * compute_speed(v_max, rho_max, rho)
 
 x_tab = np.linspace(0, L, nx)
@@ -102,6 +107,11 @@ rho[(x_tab >= 1) & (x_tab <= 2)] = 0.8 * rho_max
 rho[(x_tab >= 3) & (x_tab <= 4)] = 0.8 * rho_max
 
 def continuous_model(rho = rho):
+    '''
+    Print density evolution over time
+    args:
+    - rho: [float] -> original density
+    '''
     rho_tab = np.zeros((nt, nx))
     rho_tab[0, :] = rho
 
@@ -127,5 +137,5 @@ def continuous_model(rho = rho):
 
 
 if __name__ == '__main__':
-    discrete_model(N = 500, time_actualisation = 5 / 3600)
+    discrete_model(N = 10, time_actualisation = 5 / 3600)
     continuous_model()
