@@ -14,11 +14,11 @@ import random
 - l is a length in km
 - rho_max is a density in vehicle/km
 '''
-N = 10
+N = 20
 T = 0.1  # 6 minutes 
 v_max = 50 
 l = 0.005 # 5 meters 
-l_init = 30*l # distance de réfénce pour initialisation des positions
+l_init = 10*l # distance de réfénce pour initialisation des positions
 rho_max = 1 / l
 
 #######################################################################
@@ -33,9 +33,17 @@ def speed_greenshields(v_max, rho_max, rho):
 ## AUTRES VERSIONS POSSIBLES (VITESSE) :
 # def speed_quadratic(v_max, rho_max, rho): ...
 
+#######################################################################
+#     BLOC 2 : MODÈLES DE DEFINITION DE RHO (Dans modèle discret)               
+#######################################################################
+
+def discrete_rho_func(l, distance, rho_max):
+    return l / distance if distance > 0 else rho_max
+
+## AUTRES VERSIONS POSSIBLES
 
 #######################################################################
-#                       BLOC 2 : MODÈLES DE FLUX (POUR CONTINU)               
+#                       BLOC 3 : MODÈLES DE FLUX (POUR CONTINU)               
 #######################################################################
 
 def flux_standard(rho, speed_func, v_max, rho_max):
@@ -47,11 +55,10 @@ def flux_standard(rho, speed_func, v_max, rho_max):
 
 
 #######################################################################
-#                       BLOC 3 : CONDITIONS INITIALES               
+#                       BLOC 4 : CONDITIONS INITIALES               
 #######################################################################
 
 # --- POUR LE MODÈLE DISCRET ---
-## CHANGEMENT ICI : Remplacement de l par l_init dans les 4 fonctions suivantes
 def init_pos_uniform(N, l_ref):
     """ 1) Uniforme """
     return np.array([l_ref * i for i in range(N)], dtype=float)
@@ -95,42 +102,54 @@ def init_rho_single_jam(nx, rho_max, x_tab):
     rho[(x_tab >= 2) & (x_tab <= 3)] = 0.9 * rho_max
     return rho
 
+# équivalent au bottleneck discret
+def init_rho_bottleneck(nx, rho_max, x_tab):
+    rho = np.zeros(nx)
+    L_init = N * l_init
+    rho[x_tab <= L_init] = 1 / l_init 
+    start_x, end_x = L_init * 0.35, L_init * 0.65 
+    rho[(x_tab >= start_x) & (x_tab <= end_x)] = rho_max * 0.8
+    return rho
+
 ## AUTRES VERSIONS POSSIBLES (DENSITÉS CONTINUES) :
 # def init_rho_empty_road(nx, rho_max, x_tab): ...
 
 
 #######################################################################
-#                       BLOC 4 : MODÈLE DISCRET               
+#                       BLOC 5 : MODÈLE DISCRET               
 #######################################################################
 
-def discrete_model(N, time_actualisation, speed_func=speed_greenshields, init_pos_func=init_pos_uniform, ax=None):
+def discrete_model(N, time_actualisation, l, rho_func=discrete_rho_func, speed_func=speed_greenshields, init_pos_func=init_pos_uniform, ax=None):
     time_steps = int(T / time_actualisation)
     t_tab = np.linspace(0, T, time_steps)
     x_tab = np.zeros((N, time_steps))
     v_tab = np.zeros((N, time_steps))
 
     x_tab[:, 0] = init_pos_func(N, l_init)
+    rho_tab = np.zeros((N-1, time_steps))
     
     for i in range(N):
         if i == N - 1:
             v_tab[i][0] = v_max
         else:
             distance = x_tab[i+1][0] - x_tab[i][0]
-            density = 1 / distance if distance > 0 else rho_max
+            density = rho_func(l, distance, rho_max)
             v_tab[i][0] = speed_func(v_max, rho_max, density)
+            rho_tab[i][0] = density
 
     t = 1
     while t < time_steps :
         for i in range(N):
             x_tab[i][t] = x_tab[i][t-1] + v_tab[i][t-1] * time_actualisation
-        
+
         for i in range(N):
             if i == N - 1:  
                 v_tab[i][t] = v_max
             else:
                 distance = x_tab[i+1][t] - x_tab[i][t]
-                density = 1 / distance if distance > 0 else rho_max
+                density = rho_func(l, distance, rho_max)
                 v_tab[i][t] = speed_func(v_max, rho_max, density)
+                rho_tab[i][t] = density
         t += 1
 
     # --- GESTION DE L'AFFICHAGE ---
@@ -139,20 +158,29 @@ def discrete_model(N, time_actualisation, speed_func=speed_greenshields, init_po
         fig, ax = plt.subplots(figsize=(10, 6))
         show_plot = True
 
-    for i in range(N):
-        ax.plot(x_tab[i], t_tab)
+    # 2. Affichage du tableau rho en arrière-plan via un scatter plot
+    x_mid = (x_tab[:-1, :] + x_tab[1:, :]) / 2
+    T_mat = np.tile(t_tab, (N-1, 1))
     
+    # On ajoute vmin et vmax pour forcer l'échelle de couleurs
+    sc = ax.scatter(x_mid, T_mat, c=rho_tab, cmap='jet', vmin=0, vmax=rho_max, s=40, alpha=0.9, edgecolors='none', marker='s')
+
+    # AJOUT DE LA COLORBAR SPÉCIFIQUE AU GRAPHE DISCRET
+    # On utilise la figure associée à l'axe pour la placer correctement
+    fig = ax.figure 
+    fig.colorbar(sc, ax=ax, label='Densité (veh/km)')
+
     ax.set_title(f'Discret | Init: {init_pos_func.__name__} | Vit: {speed_func.__name__}')
     ax.set_xlabel('Position (km)')
     ax.set_ylabel('Temps (h)')
-    ax.grid(True)
+    ax.grid(True, alpha=0.5) 
 
     if show_plot:
         plt.show()
 
 
 #######################################################################
-#                       BLOC 5 : MODÈLE CONTINU               
+#                       BLOC 6 : MODÈLE CONTINU               
 #######################################################################
 
 def continuous_model(L=5, nx=200, speed_func=speed_greenshields, flux_func=flux_standard, init_cond_func=init_rho_two_jams, ax=None):
@@ -186,8 +214,11 @@ def continuous_model(L=5, nx=200, speed_func=speed_greenshields, flux_func=flux_
     else:
         fig = ax.figure
 
-    im = ax.imshow(rho_tab, aspect='auto', origin='lower', extent=[0, L, T, 0], cmap='jet', vmin=0, vmax=rho_max)
-    fig.colorbar(im, ax=ax, label='Densité (veh/km)')
+    im = ax.imshow(rho_tab, aspect='auto', origin='lower', extent=[0, L, 0, T], cmap='jet', vmin=0, vmax=rho_max)
+    
+    if show_plot:
+        fig.colorbar(im, ax=ax, label='Densité (veh/km)')
+        
     ax.set_title(f'Continu | Init: {init_cond_func.__name__} | Vit: {speed_func.__name__}')
     ax.set_xlabel('Position (km)')
     ax.set_ylabel('Temps (h)')
@@ -200,18 +231,34 @@ def continuous_model(L=5, nx=200, speed_func=speed_greenshields, flux_func=flux_
 #                       BLOC 6 : COMPARATEURS (RUNNERS)               
 #######################################################################
 
+def run_rho_comparison():
+    """ Compare directement la densité (rho) entre le modèle discret et continu """
+    print("\n--- Lancement du comparateur DE CONVERGENCE RHO ---")
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle("Comparaison de la Densité : Discret vs Continu", fontsize=16, fontweight='bold')
+
+    # L_total prend en compte la position initiale ET la distance parcourue pendant T
+    L_total = (N * l_init) + (v_max * T)
+
+    # Lancement du modèle discret
+    discrete_model(N=N, time_actualisation=5/3600,l=l,rho_func=discrete_rho_func, speed_func=speed_greenshields, init_pos_func=init_pos_bottleneck, ax=axes[0])
+
+    # Lancement du modèle continu
+    continuous_model(L=L_total, nx=100, speed_func=speed_greenshields, flux_func=flux_standard, init_cond_func=init_rho_bottleneck, ax=axes[1])
+
+    # Synchronisation des colorbars
+    im = plt.cm.ScalarMappable(cmap='jet', norm=plt.Normalize(vmin=0, vmax=rho_max))
+    fig.colorbar(im, ax=axes.ravel().tolist(), label='Densité (veh/km)', orientation='vertical', fraction=0.02, pad=0.04)
+
+    plt.show()
+
 def run_continuous_comparison():
     """ Lance une grille de comparaison pour le modèle continu """
     print("\n--- Lancement du comparateur CONTINU ---")
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
     fig.suptitle("Comparaison des Modèles Continus", fontsize=16, fontweight='bold')
 
-    # En haut à gauche : Cas classique
     continuous_model(speed_func=speed_greenshields, init_cond_func=init_rho_two_jams, ax=axes[0, 0])
-    
-    # Pour comparer avec d'autres paramètres
-    # continuous_model(speed_func=speed_quadratic, init_cond_func=init_rho_two_jams, ax=axes[0, 1])
-
     plt.tight_layout(pad=3.0)
     plt.show()
 
@@ -222,26 +269,19 @@ def run_discrete_comparison():
     fig.suptitle("Comparaison des Modèles Discrets", fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
-    # Espacement aléatoire
-    discrete_model(N=N, time_actualisation=5/3600, speed_func=speed_greenshields, init_pos_func=init_pos_uniform, ax=axes[0])
-    
-    # Pour comparer avec d'autres paramètres
-    discrete_model(N=N, time_actualisation=5/3600, speed_func=speed_greenshields, init_pos_func=init_pos_bottleneck, ax=axes[1])
-
-    # Pour comparer avec d'autres paramètres
-    discrete_model(N=N, time_actualisation=5/3600, speed_func=speed_greenshields, init_pos_func=init_pos_dense, ax=axes[2])
-
-    # Pour comparer avec d'autres paramètres
-    discrete_model(N=N, time_actualisation=5/3600, speed_func=speed_greenshields, init_pos_func=init_pos_wave, ax=axes[3])
+    discrete_model(N=N, time_actualisation=5/3600, l=l, speed_func=speed_greenshields, init_pos_func=init_pos_uniform, ax=axes[0])
+    discrete_model(N=N, time_actualisation=5/3600, l=l, speed_func=speed_greenshields, init_pos_func=init_pos_bottleneck, ax=axes[1])
+    discrete_model(N=N, time_actualisation=5/3600, l=l, speed_func=speed_greenshields, init_pos_func=init_pos_dense, ax=axes[2])
+    discrete_model(N=N, time_actualisation=5/3600, l=l, speed_func=speed_greenshields, init_pos_func=init_pos_wave, ax=axes[3])
 
     plt.tight_layout(pad=3.0)
     plt.show()
 
-
 if __name__ == '__main__':
     # Comparaison des modèles
-    run_discrete_comparison()
+    # run_discrete_comparison()
     # run_continuous_comparison()
+    run_rho_comparison()
 
     # Voir un seul modèle à la fois
     # continuous_model(speed_func=speed_greenshields, init_cond_func=init_rho_single_jam)
