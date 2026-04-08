@@ -1,4 +1,59 @@
-\documentclass{document}
+\documentclass{article}
 \usepackage{mesraccourcis}
-\title{}
+
+\title{Passage du modèle discret au modèle continue}
+\author{Paul Lehaut}
+
 \begin{document}
+\maketitle
+
+\section{Introduction}
+On s'intéresse à la modélisation du traffic routier à travers un modèle discret et un modèle continue. L'onjectif est d'établir la convergence du modèle discret vers le modèle continue lorsque le nombre $N$ de véhicule tend vers l'infini.
+
+\section{Modèle discret}
+On commence par présenter le modèle discret constituer de $N$ véhicules de position initiale $x^0_1 < ...<x^0_N$, on définit alors $\rho_i = \frac{1}{x_{i+1} - x_i}$ et $\rho_{max} = \frac{1}{\text{longueur d'un véhicule}}$. La vitesse des véhicules est définie par : 
+$$\dot x_N(t) = v_{max} \ \ \text{et} \ \ \dot x_i(t)= v(\frac{l_N}{x_{i+1}(t) - x_i(t)}) = v(\rho_i) \ \ \text{où} \ \  v(\rho_i)=v_{max}(1-\frac{\rho}{\rho_{max}}).$$
+Le principe du minimum discret implique, dans ce modèle : 
+$$\frac{l}{M}\le x_{i+1}(t) - x_i(t)\le (v_{max} - v(M))t + x_M^0 - x_N^0 \ \ \text{où} \ \ M = \sup_i \frac{l}{x_{i+1}^0 - x_i^0}$$
+On s'intéresse alors a $$\rho^N(t, x) = \sum_{i=1}^N\rho_i(t)1_{x\in [x_i,x_{i+1}]}.$$
+\bskip 
+
+\section{Modèle continu}
+On s'intéresse à une modélisation basée sur l'équation : 
+$$\frac{\partial \rho}{\partial t}(t,x) + \frac{\partial f}{\partial x}(\rho(t,x)) = 0 \ \ \text{et} \ \ \rho_0(x)=\rho(0,x) \ \ \text{où} \ \ f(\rho)=\rho v(\rho) \ \ \text{modèle de Greenshields,}$$
+cette équation vient de la conservation du flux.
+\sskip 
+On modélise ce problème à l'aide de la condition de Godunov, pour ce faire on introduit la densité critique : $\rho_c = \frac{\rho_{max}}{2}$, et le débit maximal : $q_{max} = f(\rho_c)$. Le schéma de Godunov s'énonce comme suit : 
+$$\rho_i^{t+1} = \rho_i^t - \frac{\Delta t}{\Delta x}(F_{i+1/2}^t - F_{i-1/2}^t) \ \ \text{où} \ \ F_{i+1/2}^t = F_G(\rho_i^t, \rho_{i+1}^t) \ \ \text{et} \ \ F_{i-1/2}^t = F_G(\rho_{i-1}^t, \rho_i^t),$$
+où on a définit : 
+$$F_G(\rho_1, \rho_2) = \min(D(\rho_1), S(\rho_2)) \ \ \text{avec} \ \ D(\rho) =
+\left\{
+    \begin{array}{ll}
+        f(\rho), & \text{si} \ \ \rho\le\rho_c \\
+        q_{max} & \mbox{sinon}
+    \end{array}
+\right.
+\ \ \text{et} \ \ S(\rho) =
+\left\{
+    \begin{array}{ll}
+        q_{max}, & \text{si} \ \ \rho\le\rho_c \\
+        f(\rho) & \mbox{sinon}
+    \end{array}
+\right. .$$
+La résolution de ce second modèle donne $\rho^*$, l'objectif et d'observer que : 
+$$\rho^N \to_{N\to\infty} \rho^*.$$
+\bskip 
+
+On apporte les précisions suivantes sur les notations introduites par le schéma de Godunov : 
+\begin{itemize}
+\item $\rho_c$ correspond à la densité critique, en dessous de cette densité, le traffic est considéré comme fluide, au dessus, il est saturé,
+\item $q_{max}$ correspond au débit maximal,
+\item $D(\rho)$ correspond à la demande, il s'agit du flux de véhicule pouvant avancer, dans un traffic fluide, la demande correspond simplement à l'allure $f(\rho)$, si le traffic est saturé, la place manque et l'offre se réduit au flux critique,
+\item $S(\rho)$ correspond à la demande, il s'agit de la capacité de l'espace suivant à accepté des véhicules, si l'espace suivant est fluide, alors il offre sa capacité maximale $q_{max}$, sinon simplement $f(\rho)$.
+\end{itemize}
+\bigskip
+Pour étudier la convergence du modèle discret vers le modèle continu, on utilise tout d'abord une logique de projection par intersection de segments pour reconstruire $\rho_0$ à partir de $x_1^0,..., x_N^0$ :
+
+On découpe l'espace entre $[x_0^0, x_N^0 v_{max}  T]$ en un cadrillage indexé par $C_j = [y_j, y_{j+1}]$ avec $y_{j+1} - y_j = \Delta x$. La valeur de $\rho^0_j$ est alors donnée par : 
+$$\rho^0_j = \frac{1}{\Delta x}\int_{y_j}^{y_{j+1}}\sum_{i=1}^{N-1}\rho_i(0)1_{x\in [x_i,x_{i+1}]}dx = \frac{1}{x}\sum_{i=1}^{N-1}\rho_i(0)\int_{y_j}^{y_{j+1}}1_{x\in[x_i,x_{i+1}]} = \frac{\sum_{i=1}^{N-1}\rho_i(0) \text{Overlap}_{i,j}}{\Delta x}.$$
+\end{document}
