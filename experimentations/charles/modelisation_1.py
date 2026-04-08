@@ -279,9 +279,9 @@ def run_discrete_comparison():
 
 if __name__ == '__main__':
     # Comparaison des modèles
-    # run_discrete_comparison()
+    run_discrete_comparison()
     # run_continuous_comparison()
-    run_rho_comparison()
+    # run_rho_comparison()
 
     # Voir un seul modèle à la fois
     # continuous_model(speed_func=speed_greenshields, init_cond_func=init_rho_single_jam)
