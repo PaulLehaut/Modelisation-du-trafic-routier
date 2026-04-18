@@ -3,9 +3,8 @@ import numpy as np
 import random
 
 #######################################################################
-#                       Discrete Modelisation               
+#                       Constants for modelisation
 #######################################################################
-
 '''
 - T is a time in hour 
 - v_max is a velocity in km/h 
@@ -18,14 +17,36 @@ v_max = 50
 l = 0.005 # 5 meters
 rho_max = 1 / l
 N = 500
-time_actualisation = 5 / 3600
-time_steps = int(T / time_actualisation) + 1
-x_tab = np.zeros((N, time_steps))
-for i in range(N):
-    if i == 0:
-         x_tab[i][0] = 0
-    else:
-        x_tab[i][0] = x_tab[i - 1][0] + random.uniform(5 * l, 10 * l)
+
+'''
+-rho_o is the initial density !!! initialisé avec N, on ne connait pas la position initiale des véhicules !!!
+'''
+rho_0 = np.random.normal()
+
+'''
+Définition des positions à partir de la répartition
+'''
+
+'''
+- L is the length of the road in km
+- nx is the number of spatial discretization points
+- dx is the spatial step in km
+- dt is the time step in hours, to satisfy the CFL condition we need dt <= dx / v_max 
+- nt is the number of time steps
+'''
+L = x_tab[-1][0]+ v_max * T - x_tab[0][0]
+nx = 1000
+dx = L / nx
+dt = 0.9 * dx / v_max
+nt = int(T / dt) + 1
+x_init = x_tab[:, 0].copy()
+x_min = x_init[0]
+x_cell_edges = np.linspace(x_min, x_min + L, nx + 1)
+#######################################################################
+#                       Discrete Modelisation               
+#######################################################################
+
+
 
 def compute_speed(v_max, rho_max, rho):
     speed = v_max * (1 - rho / rho_max)
@@ -69,22 +90,6 @@ def discrete_model(N, time_actualisation, x_tab, time_steps):
 #######################################################################
 #                       Continuous Modelisation               
 #######################################################################
-
-'''
-- L is the length of the road in km
-- nx is the number of spatial discretization points
-- dx is the spatial step in km
-- dt is the time step in hours, to satisfy the CFL condition we need dt <= dx / v_max 
-- nt is the number of time steps
-'''
-L = x_tab[-1][0]+ v_max * T - x_tab[0][0]
-nx = 200
-dx = L / nx
-dt = 0.9 * dx / v_max
-nt = int(T / dt) + 1
-x_init = x_tab[:, 0].copy()
-x_min = x_init[0]
-x_cell_edges = np.linspace(x_min, x_min + L, nx + 1)
 
 def compute_mesh(x, nx, dx, x_min):
     '''
@@ -156,6 +161,10 @@ def continuous_model(rho = rho):
     plt.show()
 
 
+
+#######################################################################
+#                              Computation               
+#######################################################################
 if __name__ == '__main__':
 
     x_tab = discrete_model(N, time_actualisation, x_tab, time_steps)
