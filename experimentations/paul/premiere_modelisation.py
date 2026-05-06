@@ -23,12 +23,20 @@ RHO_MAX = 1 / L_VEHICLE
 RHO_C = RHO_MAX / 2
 # Q_MAX = compute_rho_Greenshields(RHO_C)
 
+
+#######################################################################
+#                   Initial density and position         
+#######################################################################
+DENSITY_PROFILES = {
+    'shock_wave': lambda x : 
+        }
+
+#def rho_initial(x, profile):
+
+
 #######################################################################
 #                       Discrete Modelisation               
 #######################################################################
-
-
-
 def compute_speed(rho):
     speed = V_MAX * (1 - rho / RHO_MAX)
     return max(0, min(speed, V_MAX))
@@ -70,7 +78,6 @@ def discrete_model(N, time_actualisation, x_tab, time_steps):
 #######################################################################
 #                       Continuous Modelisation               
 #######################################################################
-
 def compute_mesh(x, nx, dx, x_min):
     '''
     Compute rho from a set of position x using geometric projection
@@ -135,21 +142,27 @@ def continuous_model(rho, dt, nt):
 if __name__ == '__main__':
     '''
     - n_tab is an array containing the number of vehicles for a modelisation
-    - rho_0 is a profile of initial density used in our modelisation
     - err_tab compute the L1 distance between rho_discrete and rho_continuous
     '''
     n_tab = [10, 50, 100, 500, 1000, 2000]
     err_tab = []
+    n_ref=20001
     for n in n_tab:
         l = n * L_VEHICLE # Length for N vehicles bumper-to-bumper
-        # A road with light traffic (20% of maximum capacity) and a traffic jam (80% of maximum capacity) in the middle
-        rho_0_continuous = 0.2 * RHO_MAX * np.ones(n)
-        rho_0_continuous[3 * n // 10:6 * n //10] = 0.8 * RHO_MAX
+        x_domain = [0, l]
+        options = ', '.join(DENSITY_PROFILES.keys())
+        print(f"Chose an initial density profile: {options}.")
+        choice = input()
+        assert choice in DENSITY_PROFILES, 'Invalid choice of initial density.'
 
-        #Definition of the original position with rho_0
+        ########################################################################
+        #           Definition of the original position with rho_0             #
+        ########################################################################
+        x_ref = np.linspace(x_domain[0], x_domain[1], n_ref)
+        rho_ref = DENSITY_PROFILES[choice](x_ref)
         x_0 = np.zeros(n)
         for i in range(1, n):
-            x_0[i] = x_0[i-1] + 1 / rho_0_continuous[i-1]
+            x_0[i] = x_0[i-1] + 1 / rho_0[i-1]
 
         '''
         - l_road is the length of the road in km
@@ -168,6 +181,16 @@ if __name__ == '__main__':
         nt_discrete = int(T / dt_discrete) + 1
         nt_continuous = int(T / dt_continuous) + 1
 
+        plt.figure()
+        plt.plot(rho_0 / RHO_MAX * 100)
+        plt.xlabel('Position on the road')
+        plt.ylabel('Density (percentage of RHO_MAX)')
+        plt.title(f'Initial density {n} vehicles')
+        plt.show()
+
+        ########################################################################
+        #                        Discrete modelisation                         #
+        ########################################################################
         # x_tab for discrete modelisation
         x_tab = np.zeros((n, nt_discrete))
         x_tab[:,0] = x_0.copy()
@@ -175,18 +198,11 @@ if __name__ == '__main__':
         x_cell_edges = np.linspace(x_min, x_min + l_road, nx + 1)
 
         # rho for discrete modelisation
-        rho = compute_mesh(x_0, nx, dx, x_min)
-
-        plt.figure()
-        plt.plot(rho_0_continuous / RHO_MAX * 100)
-        plt.xlabel('Position on the road')
-        plt.ylabel('Density (percentage of RHO_MAX)')
-        plt.title(f'Initial density {n} vehicles')
-        plt.show()
+        rho_discrete_0 = compute_mesh(x_0, nx, dx, x_min)
 
         discrete_model(n, dt_discrete, x_tab, nt_discrete)
         rho_discrete = np.zeros((nt_continuous, nx))
-        rho_discrete[0, :] = rho
+        rho_discrete[0, :] = rho_discrete_0
         for ts in range(1, nt_continuous):
             t_continuous = ts * dt_continuous
             ts_discret = int(t_continuous / dt_discrete)
@@ -199,8 +215,11 @@ if __name__ == '__main__':
         ax[0].set_title(f'Evolution of density over time: discrete model for {n} vehicles')
         ax[0].set_xlabel('Position on the road (in km)')
         ax[0].set_ylabel('Time (in hours)')
-        
-        rho_continuous = continuous_model(rho, dt_continuous, nt_continuous)
+
+        ########################################################################
+        #                     Continuous modelisation                          #
+        ########################################################################
+        rho_continuous = continuous_model(rho_discrete_0, dt_continuous, nt_continuous)
         im1 = ax[1].imshow(rho_continuous, aspect='auto', origin='lower', extent=[0, l_road, 0, T], cmap='jet', vmin=0, vmax=RHO_MAX)
         fig.colorbar(im0, ax=ax[1], label='Density (in vehicles/km)')
         ax[1].set_title(f'Evolution of density over time: continuous model for {n} vehicles')
@@ -208,6 +227,10 @@ if __name__ == '__main__':
         ax[1].set_ylabel('Time (in hours)')
         plt.show()
 
+
+        ########################################################################
+        #                        Error computation                             #
+        ########################################################################
         err = np.abs(rho_continuous - rho_discrete).sum()
         err_tab.append(err)
     
