@@ -27,12 +27,37 @@ RHO_C = RHO_MAX / 2
 #######################################################################
 #                   Initial density and position         
 #######################################################################
+def shock_wave(x, rho, x_dom):
+    shock_pos = x[2 * len(x) // 5]
+    rho[x < shock_pos] = 0.75 * RHO_MAX
+    rho[shock_pos < x] = 0.15 * RHO_MAX
+    
+def rarefaction_wave(x, rho, x_dom):
+    rho[:] = 0.15 * RHO_MAX + 0.55 * RHO_MAX * np.exp(-x / 2.0)
+
+def stop_and_go_wave(x, rho, x_dom):
+    base = 0.45 * RHO_MAX
+    amp = 0.30 * RHO_MAX
+    rho[:] = base + amp * np.sin(3.0 * np.pi * x / (x_dom[1] - x_dom[0]))
+
 DENSITY_PROFILES = {
-    'shock_wave': lambda x : 
-        }
+    'shock_wave': shock_wave ,
+    'rarefaction_wave': rarefaction_wave,
+    'stop_and_go_wave': stop_and_go_wave
+    }
 
-#def rho_initial(x, profile):
+def build_initial_positions(N, x_ref, rho_ref, n_ref = 20001):
+    dx_ref = x_ref[1] - x_ref[0]
+    cdf_ref = np.zeros_like(x_ref)
 
+    cdf_ref[1:] = np.cumsum(0.5 * (rho_ref[:-1] + rho_ref[1:]) * dx_ref)
+
+    total_mass = cdf_ref[-1]
+    mass_particle = total_mass / N
+
+    mass_levels = np.linspace(0, total_mass, N + 1)
+    x_0 = np.interp(mass_levels, cdf_ref, x_ref)
+    return x_0, mass_particle, total_mass
 
 #######################################################################
 #                       Discrete Modelisation               
@@ -159,8 +184,9 @@ if __name__ == '__main__':
         #           Definition of the original position with rho_0             #
         ########################################################################
         x_ref = np.linspace(x_domain[0], x_domain[1], n_ref)
-        rho_ref = DENSITY_PROFILES[choice](x_ref)
-        x_0 = np.zeros(n)
+        rho_ref = np.zeros_like(x_ref)
+        DENSITY_PROFILES[choice](x_ref, rho_ref, x_domain)
+        x_0 = build_initial_positions(n, x_ref, rho_ref)
         for i in range(1, n):
             x_0[i] = x_0[i-1] + 1 / rho_0[i-1]
 
@@ -175,7 +201,7 @@ if __name__ == '__main__':
         nx = 1000
         dx = l_road / nx
         dt_discrete = 0.5 * (L_VEHICLE / V_MAX)
-        # CFM condition requires dt <= dx / V_MAX
+        # CFL condition requires dt <= dx / V_MAX
         dt_continuous = 0.9 * dx / V_MAX
 
         nt_discrete = int(T / dt_discrete) + 1
