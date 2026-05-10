@@ -1,15 +1,15 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import random
+from scipy.interpolate import interp1d
 
 #######################################################################
-#                       Constants for modelisation
+#                       Constants for modelisation                    #
 #######################################################################
 '''
 - T is a time in hour 
 - V_MAX is a velocity in km/h 
 - L_VEHICLE is a vehicle length in km
-- RHO_MAX is a density in vehicle/km
+- RHO_MAX is the maximal density (vehicle/km)
 '''
 T = 0.1 # 6 minutes 
 V_MAX = 50
@@ -25,20 +25,33 @@ RHO_C = RHO_MAX / 2
 
 
 #######################################################################
-#                   Initial density and position         
+#                       Initial density                               #
 #######################################################################
-def shock_wave(x, rho, x_dom):
-    shock_pos = x[2 * len(x) // 5]
-    rho[x < shock_pos] = 0.75 * RHO_MAX
-    rho[shock_pos < x] = 0.15 * RHO_MAX
+def shock_wave(r_pos):
+    '''
+    A light traffic at the start and heavy at the end
+    '''
+    return np.where(r_pos <= 0.5, 0.2, 0.9)
     
-def rarefaction_wave(x, rho, x_dom):
-    rho[:] = 0.15 * RHO_MAX + 0.55 * RHO_MAX * np.exp(-x / 2.0)
+def rarefaction_wave(r_pos):
+    '''
+    An heavy traffic at the start which get smoother at the end
+    '''
+    return np.where(r_pos <= 0.75, 0.80, 0.20).astype(float)
 
-def stop_and_go_wave(x, rho, x_dom):
-    base = 0.45 * RHO_MAX
-    amp = 0.30 * RHO_MAX
-    rho[:] = base + amp * np.sin(3.0 * np.pi * x / (x_dom[1] - x_dom[0]))
+def stop_and_go_wave(r_pos):
+    '''
+    Three zones of huge density split by smoother zones
+    '''
+    w     = 0.012
+    rho   = 0.10 * np.ones_like(r_pos)
+    delta = 0.80   
+    for start, end in [(0.05, 0.22), (0.38, 0.50), (0.65, 0.82)]:
+        rho += delta * (
+            0.5 * (1 + np.tanh((r_pos - start) / w)) *
+            0.5 * (1 - np.tanh((r_pos - end)   / w))
+        )
+    return np.clip(rho, 0.05, 0.95)
 
 DENSITY_PROFILES = {
     'shock_wave': shock_wave ,
@@ -46,94 +59,120 @@ DENSITY_PROFILES = {
     'stop_and_go_wave': stop_and_go_wave
     }
 
-def build_initial_positions(N, x_ref, rho_ref, n_ref = 20001):
-    dx_ref = x_ref[1] - x_ref[0]
-    cdf_ref = np.zeros_like(x_ref)
-
-    cdf_ref[1:] = np.cumsum(0.5 * (rho_ref[:-1] + rho_ref[1:]) * dx_ref)
-
-    total_mass = cdf_ref[-1]
-    mass_particle = total_mass / N
-
-    mass_levels = np.linspace(0, total_mass, N + 1)
-    x_0 = np.interp(mass_levels, cdf_ref, x_ref)
-    return x_0, mass_particle, total_mass
 
 #######################################################################
-#                       Discrete Modelisation               
+#                       Discrete Modelisation                         #
 #######################################################################
+'''
+- x is the absolute position of a vehicle on the road
+- r_pos is the relative position of a vehcile given by r_pos[i] = i / number_of_vehicle
+'''
+def x_from_relative_position(choice, l_ref, n_ref = 10001):
+    r_pos    = np.linspace(0.0, 1.0, n_ref)
+    dr       = r_pos[1] - r_pos[0]
+    inv_rho  = 1.0 / DENSITY_PROFILES[choice](r_pos)
+
+    cum      = np.zeros(n_ref)
+    cum[1:]  = np.cumsum(0.5 * (inv_rho[:-1] + inv_rho[1:]) * dr)
+    total    = cum[-1]
+
+    x_ref    = l_ref * cum / total  
+    return r_pos, x_ref
+
+
+def relative_positions_from_x(x, x_ref, r_pos):
+    return np.interp(x, x_ref, r_pos)
+
+def compute_initial_positions(N, r_pos, rho_0_norm):
+    gaps = L_VEHICLE / rho_0_norm
+
+    x_0 =  np.zeros(N + 1)
+    x_0[1:] = np.cumsum(gaps)
+
+    l_0 = x_0[N]
+    return x_0, l_0
+
 def compute_speed(rho):
     speed = V_MAX * (1 - rho / RHO_MAX)
-    return max(0, min(speed, V_MAX))
+    return np.clip(speed, 0, V_MAX)
 
-def discrete_model(N, time_actualisation, x_tab, time_steps):
-    v_tab = np.zeros((N, time_steps))
-    for i in range(N):
-        if i == N - 1:
-            v_tab[i][0] = V_MAX
-        else:
-            distance = max(x_tab[i + 1][0] - x_tab[i][0], L_VEHICLE)
-            v_tab[i][0] = compute_speed(1 / distance)
+def discrete_model(N, time_actualisation, x_tab, nb_time_steps):
+    v_tab = np.zeros((N + 1, nb_time_steps))
+
+    distance = x_tab[1:, 0] - x_tab[:N, 0]
+    v_tab[:N, 0] = compute_speed(1 / distance)
+    v_tab[N, 0] = V_MAX
+
     t = 1
-    while t < time_steps :
-        for i in range(N):
-            x_tab[i][t] = x_tab[i][t-1] + v_tab[i][t-1] * time_actualisation
+    while t < nb_time_steps :
+        x_tab[:, t] = x_tab[:, t-1] + v_tab[:, t-1] * time_actualisation
         
-        for i in range(N):
-            if i == N - 1:  
-                v_tab[i][t] = V_MAX
-            else:
-                distance = x_tab[i + 1][t] - x_tab[i][t]
-                v_tab[i][t] = compute_speed(1 / distance)
+        distance = np.maximum(x_tab[1:, t] - x_tab[:N, t], L_VEHICLE)
+        v_tab[:N, t] = compute_speed(1 / distance)
+        v_tab[N, t] = V_MAX
         t += 1
+
+def compute_rho_discrete_from_position(x_tab, x_cells, t_discrete, t_continuous):
     '''
-    plt.figure(figsize=(10,6))
-    for i in range(N):
-        plt.plot(x_tab[i], t_tab, label = f'Position of vehicle {i+1}')
-    plt.title('Evolution of vehicle positions over time')
-    plt.xlabel('Position (in km)')
-    plt.ylabel('Time (in hours)')
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+    Interpolate vehicles position then compute density at times studied
+    in the discrete model (both discrete and continuous temporal grids are not equals)
+    
+    - x_tab[N, T] is the array of position given by the discrete model
+    - t_discrete is the temporal grid of discrete model
+    - t_continuous is the temporal grid of continuous model
     '''
-    return x_tab
+    n_seg = x_tab.shape[0] - 1 
+    interpolation_x = interp1d(t_discrete, x_tab, axis=1, kind='linear', bounds_error=False, fill_value=(x_tab[:,0], x_tab[:,-1]))
+
+    nt_cont = len(t_continuous)
+    x_seg = np.zeros((n_seg + 1, nt_cont))
+    rho_seg = np.zeros((n_seg, nt_cont))
+
+    for k, t in enumerate(t_continuous):
+        x_k = interpolation_x(t)
+        gap = np.maximum(np.diff(x_k), L_VEHICLE)
+        x_seg[:, k] = x_k
+        rho_seg[:, k] = np.minimum(1 / gap, RHO_MAX)
+    
+    rho_discrete = np.zeros((nt_cont, len(x_cells)))
+    for k in range(nt_cont):
+        x_k = x_seg[:, k]
+        idx = np.searchsorted(x_k, x_cells, side='right') - 1
+        in_fleet = (idx >= 0) & (idx < n_seg)
+        rho_discrete[k, in_fleet] = rho_seg[idx[in_fleet], k]
+    
+    return rho_discrete
 
 
 #######################################################################
-#                       Continuous Modelisation               
+#                       Continuous Modelisation                       #     
 #######################################################################
-def compute_mesh(x, nx, dx, x_min):
+def compute_initial_density(x_cells, r_pos, x_ref, L_ref, profile):
     '''
-    Compute rho from a set of position x using geometric projection
+    rho_0_continuous(x_i) = rho_0_norm(r_pos(x_i)) * RHO_MAX
+                          = rho_0_norm(i / N) * RHO_MAX
+                          = rho_0_discrete(x_i)
+    when N -> infty
     '''
-    rho = np.zeros(nx)
-    for i in range(n - 1):
-        interval_left = x[i]
-        interval_right = x[i + 1]
-        rho_loc = 1.0 / (interval_right - interval_left + 1e-12)
+    rho_0 = np.zeros(len(x_cells))
 
-        start_cell = max(0, min(nx - 1, int((interval_left - x_min) / dx)))
-        end_cell = max(0, min(nx - 1, int((interval_right - x_min - 1e-12) / dx)))
-
-        for j in range(start_cell, end_cell + 1):
-            cell_left = x_cell_edges[j]
-            cell_right = x_cell_edges[j + 1]
-            overlap = max(0.0, min(cell_right, interval_right) - max(cell_left, interval_left))
-            if overlap > 0:
-                rho[j] += rho_loc * overlap / dx
-    return rho
+    between_boundaries = (x_cells >= 0) & (x_cells <= L_ref)
+    r_pos_vals = relative_positions_from_x(x_cells[between_boundaries], x_ref, r_pos)
+    rho_0[between_boundaries] = DENSITY_PROFILES[profile](r_pos_vals) * RHO_MAX
+    return rho_0
 
 def compute_rho_Greenshields(rho):
     return rho * compute_speed(rho)
 
 Q_MAX = compute_rho_Greenshields(RHO_C)
 
-
 def compute_godunov_flux(rho_l, rho_r):
-    d_rho = compute_rho_Greenshields(rho_l) if rho_l <= RHO_C else Q_MAX
-    s_rho = Q_MAX if rho_r <= RHO_C else compute_rho_Greenshields(rho_r)
-    return min(d_rho, s_rho)
+    rho_l = np.asarray(rho_l)
+    rho_r = np.asarray(rho_r)
+    
+    d_rho = np.where(rho_l <= RHO_C, compute_rho_Greenshields(rho_l), Q_MAX)
+    s_rho = np.where(rho_r <= RHO_C, Q_MAX, compute_rho_Greenshields(rho_r))
+    return np.minimum(d_rho, s_rho)
 
 
 def continuous_model(rho, dt, nt):
@@ -160,94 +199,101 @@ def continuous_model(rho, dt, nt):
     return rho_tab
 
 
+#######################################################################
+#                         Erreurs L1 et L2                            #   
+#######################################################################
+def l1_error(rho_discrete, rho_continuous, dx, dt):
+    T_tot = dt * (rho_discrete.shape[0] - 1)
+    L_domain = dx * rho_discrete.shape[1]
+    return np.sum(np.abs(rho_continuous - rho_discrete) * dx * dt / (T_tot * L_domain))
+
+def l2_error(rho_discrete, rho_continuous, dx, dt):
+    T_tot = dt * (rho_discrete.shape[0] - 1)
+    L_domain = dx * rho_discrete.shape[1]
+    return np.sqrt(np.sum(np.abs(rho_continuous - rho_discrete)**2)* dx * dt / (T_tot * L_domain))
+
 
 #######################################################################
-#                              Computation               
+#                           Computation                               #   
 #######################################################################
 if __name__ == '__main__':
     '''
     - n_tab is an array containing the number of vehicles for a modelisation
     - err_tab compute the L1 distance between rho_discrete and rho_continuous
     '''
-    n_tab = [10, 50, 100, 500, 1000, 2000]
-    err_tab = []
-    n_ref=20001
+    n_tab = [20, 50, 100, 200, 500, 1000, 2000]
+    err1 = []
+    err2 = []
+    options = ', '.join(DENSITY_PROFILES.keys())
+    print(f"Chose an initial density profile: {options}.")
+    choice = input()
+    assert choice in DENSITY_PROFILES, 'Invalid choice of initial density.'
+
     for n in n_tab:
-        l = n * L_VEHICLE # Length for N vehicles bumper-to-bumper
-        x_domain = [0, l]
-        options = ', '.join(DENSITY_PROFILES.keys())
-        print(f"Chose an initial density profile: {options}.")
-        choice = input()
-        assert choice in DENSITY_PROFILES, 'Invalid choice of initial density.'
-
-        ########################################################################
-        #           Definition of the original position with rho_0             #
-        ########################################################################
-        x_ref = np.linspace(x_domain[0], x_domain[1], n_ref)
-        rho_ref = np.zeros_like(x_ref)
-        DENSITY_PROFILES[choice](x_ref, rho_ref, x_domain)
-        x_0 = build_initial_positions(n, x_ref, rho_ref)
-        for i in range(1, n):
-            x_0[i] = x_0[i-1] + 1 / rho_0[i-1]
-
-        '''
-        - l_road is the length of the road in km
-        - nx is the number of spatial discretization points
-        - dx is the spatial step in km
-        - dt is the time step in hours, to satisfy the CFL condition we need dt <= dx / V_MAX 
-        - nt is the number of time steps
-        '''
-        l_road = x_0[-1] + V_MAX * T - x_0[0]
-        nx = 1000
-        dx = l_road / nx
-        dt_discrete = 0.5 * (L_VEHICLE / V_MAX)
-        # CFL condition requires dt <= dx / V_MAX
-        dt_continuous = 0.9 * dx / V_MAX
-
-        nt_discrete = int(T / dt_discrete) + 1
-        nt_continuous = int(T / dt_continuous) + 1
-
-        plt.figure()
-        plt.plot(rho_0 / RHO_MAX * 100)
-        plt.xlabel('Position on the road')
-        plt.ylabel('Density (percentage of RHO_MAX)')
-        plt.title(f'Initial density {n} vehicles')
-        plt.show()
-
         ########################################################################
         #                        Discrete modelisation                         #
         ########################################################################
-        # x_tab for discrete modelisation
-        x_tab = np.zeros((n, nt_discrete))
-        x_tab[:,0] = x_0.copy()
-        x_min = x_0[0]
-        x_cell_edges = np.linspace(x_min, x_min + l_road, nx + 1)
+        r_pos = np.arange(n) / n
+        rho_0_norm = DENSITY_PROFILES[choice](r_pos)
+        x_0, l_0 = compute_initial_positions(n, r_pos, rho_0_norm)
+        rho_0 = rho_0_norm * RHO_MAX
 
-        # rho for discrete modelisation
-        rho_discrete_0 = compute_mesh(x_0, nx, dx, x_min)
+        '''
+        - dt is the time step in hours, to satisfy the CFL condition we need dt <= L_VEHICLE / V_MAX 
+        - nt is the number of time steps
+        '''
+        dt_discrete = 0.9 * (L_VEHICLE / V_MAX)
+        nt_discrete = int(T / dt_discrete) + 1
+
+        plt.figure()
+        plt.plot(rho_0_norm * 100)
+        plt.xlabel('Position on the road')
+        plt.ylabel('Density (percentage of RHO_MAX) for discrete model')
+        plt.title(f'Initial density {n} vehicles')
+        plt.show()
+
+        # x_tab for discrete modelisation
+        x_tab = np.zeros((n + 1, nt_discrete))
+        x_tab[:,0] = x_0.copy()
+        x_max = x_0[n] + V_MAX * T
 
         discrete_model(n, dt_discrete, x_tab, nt_discrete)
-        rho_discrete = np.zeros((nt_continuous, nx))
-        rho_discrete[0, :] = rho_discrete_0
-        for ts in range(1, nt_continuous):
-            t_continuous = ts * dt_continuous
-            ts_discret = int(t_continuous / dt_discrete)
-            ts_discret = min(ts_discret, nt_discrete - 1)
-            rho_discrete[ts, :] = compute_mesh(x_tab[:, ts_discret], nx, dx, x_min)
+        t_discrete = np.linspace(0, T, nt_discrete)
+
+
+        ########################################################################
+        #                     Continuous modelisation                          #
+        ########################################################################
+        nx = max(100, n)  
+        dx = x_max / nx
+        # CFL condition requires dt <= dx / V_MAX
+        x_cells = np.linspace(dx / 2, x_max - dx / 2, nx)
+        dt_continuous = 0.9 * dx / V_MAX
+        nt_continuous = int(T / dt_continuous) + 1
+
+        r_pos_continuous, x_ref_continuous = x_from_relative_position(choice, l_0)
+        rho_0_continuous = compute_initial_density(x_cells, r_pos_continuous, x_ref_continuous, l_0, choice)
+
+        rho_continuous = continuous_model(rho_0_continuous, dt_continuous, nt_continuous)
+        t_continuous = np.linspace(0, T, nt_continuous)
+
+        ########################################################################
+        #                              Plots                                   #
+        ########################################################################
+        '''
+        Computation of the density from discrete model
+        '''
+        rho_discrete = compute_rho_discrete_from_position(x_tab, x_cells, t_discrete, t_continuous)
 
         fig, ax = plt.subplots(2, 1, figsize = (15,15))
-        im0 = ax[0].imshow(rho_discrete, aspect='auto', origin='lower', extent=[0, l_road, 0, T], cmap='jet', vmin=0, vmax=RHO_MAX)
+        im0 = ax[0].imshow(rho_discrete, aspect='auto', origin='lower', extent=[0, x_max, 0, T], cmap='jet', vmin=0, vmax=RHO_MAX)
         fig.colorbar(im0, ax=ax[0], label='Density (in vehicles/km)')
         ax[0].set_title(f'Evolution of density over time: discrete model for {n} vehicles')
         ax[0].set_xlabel('Position on the road (in km)')
         ax[0].set_ylabel('Time (in hours)')
 
-        ########################################################################
-        #                     Continuous modelisation                          #
-        ########################################################################
-        rho_continuous = continuous_model(rho_discrete_0, dt_continuous, nt_continuous)
-        im1 = ax[1].imshow(rho_continuous, aspect='auto', origin='lower', extent=[0, l_road, 0, T], cmap='jet', vmin=0, vmax=RHO_MAX)
-        fig.colorbar(im0, ax=ax[1], label='Density (in vehicles/km)')
+        im1 = ax[1].imshow(rho_continuous, aspect='auto', origin='lower', extent=[0, x_max, 0, T], cmap='jet', vmin=0, vmax=RHO_MAX)
+        fig.colorbar(im1, ax=ax[1], label='Density (in vehicles/km)')
         ax[1].set_title(f'Evolution of density over time: continuous model for {n} vehicles')
         ax[1].set_xlabel('Position on the road (in km)')
         ax[1].set_ylabel('Time (in hours)')
@@ -257,12 +303,18 @@ if __name__ == '__main__':
         ########################################################################
         #                        Error computation                             #
         ########################################################################
-        err = np.abs(rho_continuous - rho_discrete).sum()
-        err_tab.append(err)
-    
-    plt.plot(n_tab, err_tab)
-    plt.xlabel('Number of vehicles')
-    plt.ylabel('L1 distance of discret and continuous model')
-    plt.xscale('log')
-    plt.title('Evolution of L1 distance with n')
+        e1 = l1_error(rho_discrete, rho_continuous, dx, dt_continuous)
+        e2 = l2_error(rho_discrete, rho_continuous, dx, dt_continuous)
+        err1.append(e1)
+        err2.append(e2)
+
+    fig, ax = plt.subplots(1, 1, figsize = (10, 6))
+    ax.loglog(n_tab, err1, 'o-', label='Erreur L1', linewidth=2, markersize=8)
+    ax.loglog(n_tab, err2, 's-', label='Erreur L2', linewidth=2, markersize=8)
+    ax.set_xlabel('Number of vehicles N', fontsize=12)
+    ax.set_ylabel('Error (normalized) [veh/km]', fontsize=12)
+    ax.set_title('Convergence Discrete → Continuous', fontsize=14)
+    ax.legend(fontsize=11)
+    ax.grid(True, which='both', ls='--', alpha=0.4)
+    plt.tight_layout()
     plt.show()
