@@ -1,11 +1,8 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 
 import os
 import pandas as pd
-import numpy as np
-from scipy.interpolate import interp1d
 
 # ══════════════════════════════════════════════════════════════════════
 #  Paramètres
@@ -312,7 +309,8 @@ def _godunov_flux_vec(rho_l: np.ndarray, rho_r: np.ndarray,
         = f(rho_r)  si rho_r ≥ rho_c
         = f(rho_c)  sinon
     """
-    fl = flux(rho_l); fr = flux(rho_r)
+    fl = flux(rho_l)
+    fr = flux(rho_r)
     fc = flux(np.full_like(rho_l, rho_c))
     raref   = rho_l <= rho_r
     c_left  = (~raref) & (rho_l <= rho_c)
