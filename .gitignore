@@ -1,3 +1,6 @@
 .venv/
 suggestions.pdf
+data/
+venv/
+__pycache__/
 
