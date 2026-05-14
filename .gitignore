@@ -4,3 +4,8 @@ data/
 venv/
 __pycache__/
 
+# ResNet
+experimentations/charles/ResNet_alpha/__pycache__/
+experimentations/charles/ResNet_alpha/graphics/
+experimentations/charles/ResNet_alpha/training_results/
+

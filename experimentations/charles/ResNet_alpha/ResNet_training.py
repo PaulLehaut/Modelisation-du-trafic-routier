@@ -16,8 +16,8 @@ BASE_DIR = r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-p
 DATA_PATH = r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv"
 
 # Hyperparamètres importants (serviront pour le nommage)
-PORTION_PROBE = 0.10  # 10% de pénétration
-EPOCHS = 200
+PORTION_PROBE = 0.20  # 20% de pénétration
+EPOCHS = 1000
 LEARNING_RATE = 0.5
 
 # Paramètres physiques
