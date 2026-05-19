@@ -4,74 +4,83 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-
-# Import de la classe et des fonctions depuis le fichier modèle
 from ResNet_model import TrafficResNet, project_alpha
 
 # =====================================================================
-# CONFIGURATION ET HYPERPARAMÈTRES
+# CONFIGURATION MODULABLE
 # =====================================================================
-BASE_DIR = r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha"
-# Chemin vers le fichier de données reconstruites par Bastien à partir de notre modèle (à adapter selon votre organisation)
-DATA_PATH = r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv"
-
-# Hyperparamètres importants (serviront pour le nommage)
-PORTION_PROBE = 0.20  # 20% de pénétration
-EPOCHS = 1000
-LEARNING_RATE = 0.5
-
-# Paramètres physiques
-N_TOTAL = 1000
-L_V = 0.005
-V_MAX = 50.0
-RHO_MAX = 1.0 / L_V
+# [MODIFICATION] Regroupement dans un dictionnaire pour centraliser les choix
+CONFIG = {
+    "BASE_DIR": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha",
+    "DATA_PATH": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv",
+    "PORTION_PROBE": 0.05,
+    "EPOCHS": 200,
+    "LEARNING_RATE": 0.5,
+    "LOSS_POLICY": "continuous",  # Options: "continuous" (Approche 3) ou "final_point" (Approche 2)
+    "N_TOTAL": 1000,
+    "L_V": 0.005,
+    "V_MAX": 50.0,
+}
+CONFIG["RHO_MAX"] = 1.0 / CONFIG["L_V"]
 
 
 def main():
-    if not os.path.exists(DATA_PATH):
-        raise FileNotFoundError(f"Fichier introuvable: {DATA_PATH}")
+    if not os.path.exists(CONFIG["DATA_PATH"]):
+        raise FileNotFoundError(f"Fichier introuvable: {CONFIG['DATA_PATH']}")
 
     print("Chargement des données...")
-    df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv(CONFIG["DATA_PATH"])
 
-    num_pvs = max(2, int(PORTION_PROBE * N_TOTAL))
+    num_pvs = max(2, int(CONFIG["PORTION_PROBE"] * CONFIG["N_TOTAL"]))
     n_gaps = num_pvs - 1
 
-    t_min_s = df["Time_s"].min()
-    t_max_s = df["Time_s"].max()
+    t_min_s, t_max_s = df["Time_s"].min(), df["Time_s"].max()
     T_h = (t_max_s - t_min_s) / 3600.0
 
     times_sorted = np.sort(df["Time_s"].unique())
-    dt_s = times_sorted[1] - times_sorted[0]
-    dt_h = dt_s / 3600.0
+    dt_h = (times_sorted[1] - times_sorted[0]) / 3600.0
     num_steps = int(round(T_h / dt_h))
 
-    print(f"Simulation sur T = {T_h:.4f}h avec dt = {dt_h:.6f}h")
-    print(f"Proportion de PV: {PORTION_PROBE * 100}% -> {num_pvs} véhicules observés.")
+    # Sélection des probes (politique uniforme par défaut)
+    pv_ids = np.linspace(0, CONFIG["N_TOTAL"] - 1, num_pvs, dtype=int)
 
-    pv_ids = np.linspace(0, N_TOTAL - 1, num_pvs, dtype=int)
+    # [MODIFICATION] Calcul de la vérité terrain : alpha réel = nombre de véhicules dans le segment
+    # Cela correspond exactement à la différence des indices des probes
+    alpha_true = np.diff(pv_ids)
 
-    df_t0 = df[df["Time_s"] == t_min_s].set_index("Vehicle_ID")
-    df_tT = df[df["Time_s"] == t_max_s].set_index("Vehicle_ID")
+    # --- Extraction des données cibles ---
+    # [MODIFICATION] Extraction de l'historique spatio-temporel complet pour l'Approche 3
+    df_pvs = df[df["Vehicle_ID"].isin(pv_ids)].pivot(
+        index="Time_s", columns="Vehicle_ID", values="Position_km"
+    )
 
-    x_bar = torch.tensor(df_t0.loc[pv_ids, "Position_km"].values, dtype=torch.float32)
-    y_bar = torch.tensor(df_tT.loc[pv_ids, "Position_km"].values, dtype=torch.float32)
+    # y_target_history contient les trajectoires de tous les véhicules témoins suiveurs sur tout [0, T]
+    y_target_history = torch.tensor(df_pvs.values[:, :-1], dtype=torch.float32)
+    y_target_final = y_target_history[-1]  # Pour l'Approche 2 (fallback)
 
-    x_0_followers = x_bar[:-1]
-    x_0_leader = x_bar[-1]
-    y_target_followers = y_bar[:-1]
+    x_0_followers = y_target_history[0]
+    x_0_leader = torch.tensor(df_pvs.values[0, -1], dtype=torch.float32)
 
-    gap_0 = x_bar[1:] - x_bar[:-1]
+    y_bar = torch.tensor(
+        df_pvs.values[-1, :], dtype=torch.float32
+    )  # Toutes positions à T
+    gap_0 = (
+        x_0_followers[1:] - x_0_followers[:-1]
+        if len(x_0_followers) > 1
+        else torch.tensor([])
+    )
+    gap_0 = torch.cat([gap_0, torch.tensor([x_0_leader - x_0_followers[-1]])])
     gap_T = y_bar[1:] - y_bar[:-1]
-    z_bar = torch.min(gap_0 / L_V, gap_T / L_V)
+
+    z_bar = torch.min(gap_0 / CONFIG["L_V"], gap_T / CONFIG["L_V"])
 
     # ---------- INITIALISATION ----------
     model = TrafficResNet(
         n_gaps,
-        N_TOTAL,
-        L_V,
-        V_MAX,
-        RHO_MAX,
+        CONFIG["N_TOTAL"],
+        CONFIG["L_V"],
+        CONFIG["V_MAX"],
+        CONFIG["RHO_MAX"],
         dt_h,
         num_steps,
         x_0_followers,
@@ -79,18 +88,25 @@ def main():
         z_bar,
     )
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(model.parameters(), lr=CONFIG["LEARNING_RATE"])
 
     loss_history = []
     alpha_history = []
 
     # ---------- BOUCLE D'ENTRAÎNEMENT ----------
-    print("\nDébut de l'optimisation...")
-    for epoch in range(EPOCHS + 1):
+    print(f"\nOptimisation en cours... (Politique: {CONFIG['LOSS_POLICY']})")
+    for epoch in range(CONFIG["EPOCHS"] + 1):
         optimizer.zero_grad()
 
-        x_pred_T = model(return_history=False)
-        loss = criterion(x_pred_T, y_target_followers)
+        # [MODIFICATION] Choix dynamique de la fonction de perte
+        if CONFIG["LOSS_POLICY"] == "continuous":
+            # Approche 3 : Comparaison sur tout l'historique
+            x_pred_history = model(require_grad_history=True)
+            loss = criterion(x_pred_history, y_target_history)
+        else:
+            # Approche 2 : Comparaison uniquement à t=T
+            x_pred_T = model(require_grad_history=False)
+            loss = criterion(x_pred_T, y_target_final)
 
         loss.backward()
         optimizer.step()
@@ -105,46 +121,31 @@ def main():
 
     # ---------- PRÉDICTION FINALE ----------
     _, hist_followers, hist_leader = model(return_history=True)
-    times_h = np.linspace(0, T_h, num_steps + 1)
     alpha_optimise = model.alpha.detach().numpy()
 
-    # ---------- SAUVEGARDE DES RÉSULTATS ----------
-    print("\nSauvegarde des données d'entraînement pour la visualisation...")
+    # [MODIFICATION] Sauvegarde des données réelles pour la visualisation comparative
+    final_gaps = np.append(hist_followers[-1, 1:], hist_leader[-1]) - hist_followers[-1]
+    density_true = alpha_true / final_gaps  # Densité réelle basée sur les vrais alpha
+
     results = {
         "loss_history": loss_history,
         "alpha_history": np.array(alpha_history),
+        "alpha_true": alpha_true,  # NOUVEAU
+        "density_true": density_true,  # NOUVEAU
         "hist_followers": hist_followers,
         "hist_leader": hist_leader,
-        "times_h": times_h,
+        "times_h": np.linspace(0, T_h, num_steps + 1),
         "alpha_optimise": alpha_optimise,
-        "y_target_followers": y_target_followers.numpy(),
-        "n_gaps": n_gaps,
-        "rho_max": RHO_MAX,
-        "T_h": T_h,
-        "PORTION_PROBE": PORTION_PROBE,
-        "EPOCHS": EPOCHS,
-        "LEARNING_RATE": LEARNING_RATE,
+        "y_target_followers": y_target_final.numpy(),
+        "CONFIG": CONFIG,  # Sauvegarde de la config complète
     }
 
-    # Création d'un dossier pour stocker les résultats bruts
-    results_dir = os.path.join(BASE_DIR, "training_results")
+    results_dir = os.path.join(CONFIG["BASE_DIR"], "training_results")
     os.makedirs(results_dir, exist_ok=True)
-
-    # ---------------------------------------------------------------------
-    # --- DÉBUT DES MODIFICATIONS : NOM DE FICHIER DYNAMIQUE ---
-    # ---------------------------------------------------------------------
-
-    # Formatage du nom de fichier avec les hyperparamètres
-    filename = f"ResNet_probe{PORTION_PROBE}_ep{EPOCHS}_lr{LEARNING_RATE}.pt"
+    filename = f"ResNet_probe{CONFIG['PORTION_PROBE']}_ep{CONFIG['EPOCHS']}_loss-{CONFIG['LOSS_POLICY']}.pt"
     filepath = os.path.join(results_dir, filename)
-
-    # Sauvegarde dans le nouveau chemin
     torch.save(results, filepath)
-    print(f"Entraînement terminé et résultats sauvegardés dans :\n{filepath}")
-
-    # ---------------------------------------------------------------------
-    # --- FIN DES MODIFICATIONS ---
-    # ---------------------------------------------------------------------
+    print(f"Résultats sauvegardés dans :\n{filepath}")
 
 
 if __name__ == "__main__":

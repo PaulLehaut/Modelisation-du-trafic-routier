@@ -21,7 +21,6 @@ class TrafficResNet(nn.Module):
         z_bar,
     ):
         super(TrafficResNet, self).__init__()
-
         self.N = N_total
         self.L_v = L_v
         self.v_max = v_max
@@ -33,7 +32,6 @@ class TrafficResNet(nn.Module):
         self.x_0_leader = x_0_leader
         self.z_bar = z_bar
 
-        # Paramètre apprenable alpha : nombre de véhicules cachés par gap
         init_alpha = torch.ones(n_gaps, dtype=torch.float32) * (self.N / n_gaps)
         self.alpha = nn.Parameter(init_alpha)
 
@@ -43,14 +41,19 @@ class TrafficResNet(nn.Module):
         v = self.v_max * (1.0 - rho / self.rho_max)
         return torch.clamp(v, min=0.0, max=self.v_max)
 
-    def forward(self, return_history=False):
+    def forward(self, return_history=False, require_grad_history=False):
         """
-        Dépliage temporel.
-        :param return_history: Si True, retourne l'historique complet des positions pour la visualisation.
+        [MODIFICATION]
+        :param require_grad_history: Si True, retourne l'historique complet en tant que
+                                     tenseur PyTorch (conserve le graphe de calcul pour la loss continue).
         """
-        import numpy as np  # Import local pour le formattage history
+        import numpy as np
 
         x = self.x_0_followers.clone()
+
+        # [MODIFICATION] Initialisation des listes d'historique adaptées
+        if require_grad_history:
+            history_tensor = [x]
 
         if return_history:
             history_followers = [x.detach().numpy().copy()]
@@ -58,7 +61,6 @@ class TrafficResNet(nn.Module):
 
         for step in range(self.num_steps):
             t = step * self.dt
-
             x_leader_t = self.x_0_leader + self.v_max * t
             x_next = torch.cat([x[1:], torch.tensor([x_leader_t], device=x.device)])
 
@@ -68,12 +70,21 @@ class TrafficResNet(nn.Module):
             # Euler Explicit (Residual Connection)
             x = x + v * self.dt
 
+            # [MODIFICATION] Stockage différenciable pour l'Approche 3
+            if require_grad_history:
+                history_tensor.append(x)
+
             if return_history:
                 history_followers.append(x.detach().numpy().copy())
                 history_leader.append(x_leader_t.item())
 
+        # [MODIFICATION] Retour conditionnel selon le besoin (Entraînement vs Inférence)
+        if require_grad_history:
+            return torch.stack(history_tensor)  # Shape: (num_steps + 1, n_followers)
+
         if return_history:
             return x, np.array(history_followers), np.array(history_leader)
+
         return x
 
 

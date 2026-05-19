@@ -4,210 +4,254 @@ import torch
 import os
 
 # =====================================================================
-# CONFIGURATION (Doit correspondre aux paramètres de l'entraînement)
+# PARAMÈTRES DE CHARGEMENT
 # =====================================================================
-PORTION_PROBE = 0.20
-EPOCHS = 1000
-LEARNING_RATE = 0.5
-
 BASE_DIR = r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha"
+PORTION_PROBE = 0.05
+EPOCHS = 200
+LOSS_POLICY = "continuous"
 
-# Reconstruction dynamique du nom de fichier
-FILENAME = f"ResNet_probe{PORTION_PROBE}_ep{EPOCHS}_lr{LEARNING_RATE}.pt"
+FILENAME = f"ResNet_probe{PORTION_PROBE}_ep{EPOCHS}_loss-{LOSS_POLICY}.pt"
 RESULTS_FILE = os.path.join(BASE_DIR, "training_results", FILENAME)
 
 
 def main():
     if not os.path.exists(RESULTS_FILE):
-        raise FileNotFoundError(
-            f"Veuillez d'abord lancer l'entraînement. Fichier introuvable:\n{RESULTS_FILE}"
-        )
+        raise FileNotFoundError(f"Fichier introuvable:\n{RESULTS_FILE}")
 
     print("Chargement des résultats...")
     results = torch.load(RESULTS_FILE, weights_only=False)
 
-    # Extraction des variables
     loss_history = results["loss_history"]
     alpha_history_np = results["alpha_history"]
+    alpha_true = results["alpha_true"]
+    density_true = results["density_true"]
     hist_followers = results["hist_followers"]
     hist_leader = results["hist_leader"]
     times_h = results["times_h"]
     alpha_optimise = results["alpha_optimise"]
     y_target_followers = results["y_target_followers"]
-    n_gaps = results["n_gaps"]
-    rho_max = results["rho_max"]
-    T_h = results["T_h"]
 
-    # Hyperparamètres pour le nommage du dossier
-    portion = results["PORTION_PROBE"]
-    epochs = results["EPOCHS"]
-    lr = results["LEARNING_RATE"]
+    config = results["CONFIG"]
+    n_gaps = len(alpha_optimise)
+    rho_max = config["RHO_MAX"]
+    T_h = times_h[-1] - times_h[0]
 
-    # Création du chemin de sauvegarde cible
-    dir_name = f"ResNet_probe{portion}_ep{epochs}_lr{lr}"
-    graphics_dir = os.path.join(BASE_DIR, "graphics", dir_name)
+    dir_name = f"ResNet_probe{PORTION_PROBE}_ep{EPOCHS}_{LOSS_POLICY}"
+    graphics_dir = os.path.join(BASE_DIR, "graphics/graphics", dir_name)
     os.makedirs(graphics_dir, exist_ok=True)
 
-    print(f"Génération des graphiques dans le dossier :\n{graphics_dir}")
-    # Style de base
-    plt.style.use("seaborn-v0_8-darkgrid")
+    # Style global plus épuré
+    plt.style.use("seaborn-v0_8-whitegrid")
+    plt.rcParams.update(
+        {
+            "axes.edgecolor": "black",
+            "axes.linewidth": 1.2,
+            "legend.frameon": True,
+            "legend.edgecolor": "black",
+        }
+    )
 
-    # =================================================================
-    # 1. Évolution de la Loss (MSE)
-    # =================================================================
-    fig1, ax1 = plt.subplots(figsize=(8, 6))
-    ax1.plot(loss_history, color="crimson", lw=2)
+    # --- 1. Loss ---
+    fig1, ax1 = plt.subplots(figsize=(8, 5))
+    ax1.plot(loss_history, color="#d62728", lw=2)  # Rouge brique
     ax1.set_yscale("log")
-    ax1.set_title("1. Évolution de la Loss (MSE)", fontsize=14, fontweight="bold")
+    ax1.set_title(
+        f"1. Évolution de la Loss MSE ({LOSS_POLICY})", fontsize=14, fontweight="bold"
+    )
     ax1.set_xlabel("Epochs", fontsize=12)
-    ax1.set_ylabel("Erreur normalisée [Log]", fontsize=12)
-    ax1.grid(True, which="both", ls="--", alpha=0.5)
-
-    path1 = os.path.join(graphics_dir, "1_loss_mse.png")
-    fig1.savefig(path1, dpi=150, bbox_inches="tight")
+    ax1.set_ylabel("Erreur [Log]", fontsize=12)
+    fig1.savefig(
+        os.path.join(graphics_dir, "1_loss_mse.png"), dpi=150, bbox_inches="tight"
+    )
     plt.close(fig1)
 
-    # =================================================================
-    # 2. Convergence des paramètres Alphas
-    # =================================================================
-    fig2, ax2 = plt.subplots(figsize=(8, 6))
-    ax2.plot(alpha_history_np, alpha=0.6, lw=1.5)
+    # --- 2. Convergence Alphas ---
+    fig2, ax2 = plt.subplots(figsize=(10, 5))
+    sample_size = min(5, n_gaps)
+    colors = plt.cm.Dark2(np.linspace(0, 1, sample_size))  # Palette plus contrastée
+
+    for i in range(sample_size):
+        (line,) = ax2.plot(alpha_history_np[:, i], color=colors[i], lw=2)
+        # Pointillés avec la même couleur mais plus fins pour la vérité
+        ax2.axhline(
+            alpha_true[i],
+            color=line.get_color(),
+            linestyle="--",
+            lw=1.5,
+            alpha=0.8,
+            label=f"$\\alpha_{i}$ réel/estimé",
+        )
+
     ax2.set_title(
-        "2. Convergence des paramètres $\\alpha_i$", fontsize=14, fontweight="bold"
+        "2. Convergence des paramètres $\\alpha_i$ vers la réalité",
+        fontsize=14,
+        fontweight="bold",
     )
     ax2.set_xlabel("Epochs", fontsize=12)
-    ax2.set_ylabel("Véhicules estimés par segment", fontsize=12)
-    ax2.grid(True, ls="--", alpha=0.5)
+    ax2.set_ylabel("Nb de véhicules par segment", fontsize=12)
 
-    path2 = os.path.join(graphics_dir, "2_alphas_convergence.png")
-    fig2.savefig(path2, dpi=150, bbox_inches="tight")
+    # Nettoyage de la légende pour éviter les doublons
+    handles, labels = ax2.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax2.legend(
+        by_label.values(), by_label.keys(), bbox_to_anchor=(1.02, 1), loc="upper left"
+    )
+
+    fig2.savefig(
+        os.path.join(graphics_dir, "2_alphas_convergence.png"),
+        dpi=150,
+        bbox_inches="tight",
+    )
     plt.close(fig2)
 
-    # =================================================================
-    # 3. Diagramme Espace-Temps (Trajectoires)
-    # =================================================================
+    # --- 3. Trajectoires ---
     fig3, ax3 = plt.subplots(figsize=(10, 6))
     for i in range(hist_followers.shape[1]):
-        ax3.plot(times_h, hist_followers[:, i], color="steelblue", lw=1.5, alpha=0.7)
-    ax3.plot(times_h, hist_leader, color="darkorange", lw=2, label="Leader")
-
+        ax3.plot(times_h, hist_followers[:, i], color="#1f77b4", lw=1, alpha=0.6)
+    ax3.plot(times_h, hist_leader, color="#ff7f0e", lw=2, label="Leader")
     target_times = np.full_like(y_target_followers, T_h)
     ax3.scatter(
         target_times,
         y_target_followers,
         color="red",
         marker="x",
-        s=60,
+        s=50,
         zorder=5,
         label="Vérités terrain (t=T)",
     )
-
-    ax3.set_title(
-        "3. Diagramme Espace-Temps (Trajectoires des PVs)",
-        fontsize=14,
-        fontweight="bold",
-    )
+    ax3.set_title("3. Diagramme Espace-Temps", fontsize=14, fontweight="bold")
     ax3.set_xlabel("Temps [h]", fontsize=12)
     ax3.set_ylabel("Position [km]", fontsize=12)
-    ax3.legend(fontsize=11)
-    ax3.grid(True, ls="--", alpha=0.5)
-
-    path3 = os.path.join(graphics_dir, "3_trajectories.png")
-    fig3.savefig(path3, dpi=150, bbox_inches="tight")
+    ax3.legend()
+    fig3.savefig(
+        os.path.join(graphics_dir, "3_trajectories.png"), dpi=150, bbox_inches="tight"
+    )
     plt.close(fig3)
 
-    # =================================================================
-    # 4. Densité finale reconstruite par segment
-    # =================================================================
-    fig4, ax4 = plt.subplots(figsize=(10, 6))
-    final_gaps = np.append(hist_followers[-1, 1:], hist_leader[-1]) - hist_followers[-1]
+    # --- 4. LA NOUVELLE COMPARAISON DE DENSITÉ (Tracé en escalier + Résidus) ---
+    # Récupération des positions réelles finales pour faire un axe X spatial
+    X_final = np.append(hist_followers[-1], hist_leader[-1])
+    final_gaps = X_final[1:] - X_final[:-1]
     reconstructed_density = alpha_optimise / final_gaps
 
-    x_pos = np.arange(n_gaps)
-    ax4.bar(
-        x_pos,
-        reconstructed_density,
-        color="mediumseagreen",
-        edgecolor="black",
-        alpha=0.85,
+    # Création d'une figure à deux étages (Main plot + Erreur)
+    fig4, (ax_main, ax_err) = plt.subplots(
+        2, 1, figsize=(12, 8), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
     )
-    ax4.axhline(
+
+    # Tracé de la Vérité Terrain (Grisé avec bordure)
+    ax_main.stairs(
+        density_true,
+        X_final,
+        baseline=0,
+        fill=True,
+        color="slategray",
+        alpha=0.3,
+        label="Vérité Terrain",
+    )
+    ax_main.stairs(
+        density_true, X_final, baseline=None, color="slategray", lw=1.5, linestyle="--"
+    )
+
+    # Tracé de la Prédiction (Rouge vif)
+    ax_main.stairs(
+        reconstructed_density,
+        X_final,
+        baseline=None,
+        color="#d62728",
+        lw=2.5,
+        label="Prédiction ResNet",
+    )
+
+    ax_main.axhline(
         rho_max,
-        color="red",
-        linestyle="--",
+        color="black",
+        linestyle=":",
         lw=1.5,
         label=f"Densité Max ({rho_max:.0f} veh/km)",
     )
 
-    ax4.set_title(
-        "4. Densité macroscopique estimée à $t=T$", fontsize=14, fontweight="bold"
+    ax_main.set_title(
+        f"4. Profil spatial de la densité macroscopique à $t={T_h:.2f}h$",
+        fontsize=14,
+        fontweight="bold",
     )
-    ax4.set_xlabel("Indice du segment (entre PV $i$ et PV $i+1$)", fontsize=12)
-    ax4.set_ylabel("Densité $\\rho$ [veh/km]", fontsize=12)
-    ax4.set_ylim(0, rho_max * 1.1)
-    ax4.legend(fontsize=11)
-    ax4.grid(True, axis="y", ls="--", alpha=0.5)
+    ax_main.set_ylabel("Densité $\\rho$ [veh/km]", fontsize=12)
+    ax_main.set_ylim(0, rho_max * 1.15)
+    ax_main.legend(loc="upper right", framealpha=1.0)
 
-    path4 = os.path.join(graphics_dir, "4_final_density.png")
-    fig4.savefig(path4, dpi=150, bbox_inches="tight")
+    # Subplot des résidus (Erreur de prédiction)
+    error = reconstructed_density - density_true
+    # Utilisation d'une colormap divergente basique (rouge si surestimé, bleu si sous-estimé)
+    colors_err = ["#d62728" if e > 0 else "#1f77b4" for e in error]
+
+    # On ruse un peu car plt.stairs ne prend pas de tableau de couleurs directement pour le fill
+    for i in range(len(error)):
+        ax_err.fill_between(
+            [X_final[i], X_final[i + 1]],
+            0,
+            error[i],
+            step="post",
+            color=colors_err[i],
+            alpha=0.6,
+        )
+        ax_err.plot(
+            [X_final[i], X_final[i + 1]],
+            [error[i], error[i]],
+            color=colors_err[i],
+            lw=2,
+        )
+
+    ax_err.axhline(0, color="black", lw=1.2)
+    ax_err.set_ylabel("Erreur [veh/km]", fontsize=12)
+    ax_err.set_xlabel("Position spatiale $x$ sur la route [km]", fontsize=12)
+
+    # Ajout d'une métrique MAE (Mean Absolute Error) globale dans le coin du graphe
+    mae = np.mean(np.abs(error))
+    ax_err.text(
+        0.01,
+        0.85,
+        f"MAE: {mae:.2f}",
+        transform=ax_err.transAxes,
+        fontsize=11,
+        fontweight="bold",
+        bbox=dict(facecolor="white", alpha=0.8, edgecolor="black"),
+    )
+
+    plt.tight_layout()
+    fig4.savefig(
+        os.path.join(graphics_dir, "4_final_density_comparison.png"),
+        dpi=150,
+        bbox_inches="tight",
+    )
     plt.close(fig4)
 
-    # =================================================================
-    # 5. NOUVEAU : Évolution Spatio-Temporelle de la Densité (Heatmap)
-    # =================================================================
-
-    # --- DÉBUT DES MODIFICATIONS : Format de la figure ---
-    # Remplacement de figsize=(12, 7) par (8, 5) pour correspondre au ratio des subplots de référence
+    # --- 5. Heatmap Spatio-Temporelle ---
     fig5, ax5 = plt.subplots(figsize=(8, 5))
-    # --- FIN DES MODIFICATIONS ---
-
-    # Création des grilles pour pcolormesh (X = positions, Y = temps)
-    # Shape X_grid et T_grid : (num_steps + 1, n_gaps + 1)
     X_grid = np.hstack([hist_followers, hist_leader.reshape(-1, 1)])
     T_grid = np.tile(times_h.reshape(-1, 1), (1, n_gaps + 1))
-
-    # Calcul de la densité à chaque instant
-    # Shape gaps_all et density_all : (num_steps + 1, n_gaps)
     gaps_all = X_grid[:, 1:] - X_grid[:, :-1]
     density_all = alpha_optimise / gaps_all
-
-    # Pour 'pcolormesh' avec shading='flat', la matrice des couleurs doit avoir
-    # une dimension de moins que les grilles de coordonnées (M, N) vs (M+1, N+1).
-    # On retire donc le tout dernier pas de temps pour la couleur.
     density_plot = density_all[:-1, :]
 
     mesh = ax5.pcolormesh(
-        X_grid,
-        T_grid,
-        density_plot,
-        cmap="viridis",
-        vmin=0,
-        vmax=rho_max,
-        shading="flat",
+        X_grid, T_grid, density_plot, cmap="magma", vmin=0, vmax=rho_max, shading="flat"
     )
-
-    # --- DÉBUT DES MODIFICATIONS : Standards visuels (Colorbar, Labels, Titre) ---
-    # Utilisation d'une seule ligne pour la colorbar avec fraction=0.046 (standard de la réf)
     fig5.colorbar(mesh, ax=ax5, label="ρ [veh/km]", fraction=0.046)
-
-    # Titre simplifié (sans gras) et taille de police ajustée à 11
-    ax5.set_title("Carte de chaleur spatio-temporelle de la Densité", fontsize=11)
-
-    # Renommage exact des axes selon la référence
-    ax5.set_xlabel("x [km]")
-    ax5.set_ylabel("t [h]")
-
-    # (Les lignes de trajectoires ont été retirées pour correspondre au rendu lisse de la référence)
-
-    # Ajout du tight_layout présent dans tous tes blocs de référence
+    ax5.set_title(
+        "5. Carte de chaleur spatio-temporelle de la Densité",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax5.set_xlabel("Position $x$ [km]", fontsize=12)
+    ax5.set_ylabel("Temps $t$ [h]", fontsize=12)
     plt.tight_layout()
-
-    path5 = os.path.join(graphics_dir, "5_spatiotemporal_density.png")
-
-    # Alignement du DPI sur 150 (au lieu de 200)
-    fig5.savefig(path5, dpi=150, bbox_inches="tight")
-    # --- FIN DES MODIFICATIONS ---
-
+    fig5.savefig(
+        os.path.join(graphics_dir, "5_spatiotemporal_density.png"),
+        dpi=150,
+        bbox_inches="tight",
+    )
     plt.close(fig5)
 
     print("Tous les graphiques ont été sauvegardés avec succès !")

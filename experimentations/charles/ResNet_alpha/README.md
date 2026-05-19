@@ -25,5 +25,5 @@ experimentations/charles/ResNet_alpha/graphics
 
 ## Comparaison de plusieurs modèles ResNet
 
-Lancer simplement `ResNet_comparison.py.py`. Ce script compare l'évolution 
+Lancer simplement `ResNet_comparison.py`. Ce script compare l'évolution
 des loss d'entrainement de tous les modèles déjà entrainés
