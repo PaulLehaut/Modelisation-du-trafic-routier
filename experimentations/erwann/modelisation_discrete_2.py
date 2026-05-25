@@ -11,10 +11,12 @@ dt = 0.01
 T = 20.0
 n_steps = int(T / dt)
 
+
 def speed(d):
     """v(d) = vmax * (1 - lv/d), tronquée à 0."""
     d = max(d, lv)
     return max(0.0, vmax * (1.0 - lv / d))
+
 
 def simulate(x0):
     """
@@ -30,17 +32,18 @@ def simulate(x0):
         x_new = x.copy()
 
         for i in range(N - 1):
-            d = x[i+1] - x[i]
+            d = x[i + 1] - x[i]
             v_i = speed(d)
             x_new[i] = x[i] + dt * v_i
 
         # véhicule de tête
-        x_new[N-1] = x[N-1] + dt * vmax
+        x_new[N - 1] = x[N - 1] + dt * vmax
 
         x = x_new
-        X_hist[n+1] = x
+        X_hist[n + 1] = x
 
     return X_hist
+
 
 # =========================
 # Configurations initiales
@@ -65,7 +68,7 @@ configs = {
     "Uniforme": x0_uniform,
     "Bouchon initial": x0_bottleneck,
     "Dense": x0_dense,
-    "Onde sinusoïdale": x0_wave
+    "Onde sinusoïdale": x0_wave,
 }
 
 # =========================
@@ -88,6 +91,8 @@ for ax, (title, x0) in zip(axes, configs.items()):
     ax.invert_yaxis()
     ax.grid(alpha=0.3)
 
-plt.suptitle("Trajectoires des véhicules pour différentes positions initiales", fontsize=14)
+plt.suptitle(
+    "Trajectoires des véhicules pour différentes positions initiales", fontsize=14
+)
 plt.tight_layout()
 plt.show()

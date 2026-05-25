@@ -7,7 +7,7 @@ import os
 # PARAMÈTRES DE CHARGEMENT
 # =====================================================================
 BASE_DIR = r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha"
-PORTION_PROBE = 0.05
+PORTION_PROBE = 0.2
 EPOCHS = 200
 LOSS_POLICY = "continuous"
 

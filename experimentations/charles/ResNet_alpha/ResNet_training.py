@@ -13,7 +13,7 @@ from ResNet_model import TrafficResNet, project_alpha
 CONFIG = {
     "BASE_DIR": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha",
     "DATA_PATH": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv",
-    "PORTION_PROBE": 0.05,
+    "PORTION_PROBE": 0.2,
     "EPOCHS": 200,
     "LEARNING_RATE": 0.5,
     "LOSS_POLICY": "continuous",  # Options: "continuous" (Approche 3) ou "final_point" (Approche 2)
@@ -123,9 +123,10 @@ def main():
     _, hist_followers, hist_leader = model(return_history=True)
     alpha_optimise = model.alpha.detach().numpy()
 
-    # [MODIFICATION] Sauvegarde des données réelles pour la visualisation comparative
-    final_gaps = np.append(hist_followers[-1, 1:], hist_leader[-1]) - hist_followers[-1]
-    density_true = alpha_true / final_gaps  # Densité réelle basée sur les vrais alpha
+    # [CORRECTION] Calcul de la VRAIE densité macroscopique à t=T
+    # On utilise y_bar qui contient les VRAIES positions de toutes les sondes à t=T
+    true_gaps = y_bar[1:] - y_bar[:-1]
+    density_true = alpha_true / true_gaps.numpy()
 
     results = {
         "loss_history": loss_history,
