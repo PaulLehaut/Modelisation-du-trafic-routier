@@ -1,0 +1,3 @@
+In this folder:
+- NN architecture is layers=[2, 32, 32, 32, 32, 1], using tanh
+- fixed the value of mu
