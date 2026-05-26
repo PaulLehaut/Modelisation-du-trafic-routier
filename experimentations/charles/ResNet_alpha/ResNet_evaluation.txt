@@ -1,0 +1,743 @@
+Je voudrais que tu modifies ces fichiers pour pouvoir respecter les consignes suivantes : 
+
+- enregistrer pour chaque modèles les données d'entrainement en suivant le modèle du ResNet dans un fichier pt avec un nom explicite (ResNet ou Pinn, hyperparamètres, nom de la base de données (parmi : experimentations\bastien\datasets\traffic_N1000_rarefaction.csv, shock et stop and go))
+
+- stocker les temps d'entrainement, d'évalutation
+
+- enregistrer les loss CEE définies par :  L'efficacité du PINN et du ResNet se mesure à l'inférence par l'Erreur d'Estimation Actuelle, notée CEE, différence entre densités reconstruite et réelle pour les $(1-p)N$ véhicules non sondes : $$CEE = \frac{1}{(1-p)N} \sum_{i=0}^{(1-p)N}{(\rho_{test\_pred} - \rho_{test})^2}$$
+        \newline
+
+- garder les données d'entrainement qui permettent d'analyser individuellement chaque modèle (alpha_i, rho intermédiaire, loss_data, loss_physic). Garde toutes les fonctionnalités qui sont actuellement disponibles dans le code. Garder toutes les données qui permettent un post traitement. 
+
+Voici la description de la méthode 2 du choix des véhicules sonde  / 
+
+ Les bornes de la grille espace-temps sont le début et la fin de l'expérience et les bornes en espace sont la position du dernier véhicule à l'instant initial (connue car c'est un véhicule témoin) et la position du premier véhicule à l'instant final (connue car c'est un véhicule témoin). Les points des collocation pourraient être choisis aléatoirement sur la grille mais alors le risque est d'avoir des zones sans point de collocation, où le modèle physique ne serait pas vérifié. Pour minimiser ces vides, XX \textit{mettre lien papier en annexe} ont introduit le \textit{Latin Hypercube Sample} qui consiste à normaliser la grille sur [0;1] selon les deux axes, puis la couper équitablement en $N$ cases carrées de même dimension, puis à sélectionner aléatoirement dans chacune de ces cases un point. La grille, ramenées à ses dimensions initiales, contient à présent les N points de collocation choisis de manière pseudo-aléatoire.
+
+    \subsection{Choix de le densité temporelle plutôt que spatiale dans le traitement innovant du caractère aléatoire du choix des véhicules témoins}
+        Pour caractérisé le caractère aléatoire du tirage des véhicules témoins, nous avons calculé l'isolement temporel des véhicules, et non leur isolement spatial. En effet, dans le cadre étudié où la densité de véhicules est suffisamment forte pour que chaque véhicule doive s'adapter à la vitesse du véhicule le précédent, deux véhicules qui se suivent sont séparés d'une durée variant de moins d'un ordre de grandeur lorsque la vitesse varie et reste positive strictement, alors que l'écart spatial entre deux véhicules qui se suivent peut varier de plus d'un ordre de grandeur. L'écart temporel entre deux véhicules successifs est calculé en prenant la différence de temps de passage aux mêmes points physiques. Puisque les relevés de position n'adviennent qu'à chaque pas de temps fixé d'une seconde, il faut permettre de choisir des points fixes de l'espace pour comparer les temps de passage. Pour cela, nous avons choisis un pas d'espace de 10m (représentant un peu moins d'une seconde à 50km/h, mais pouvant représenter bien plus si la vitesse des véhicules est ralentie). Cette méthode de calcul est ainsi robuste au cadre où des véhicules peuvent s'arrêter sur la chaussée, par exemple.
+
+        \textcolor{red}{Mon avis est le suivant. L’utilisation des temps de passage plutôt que des espacements spatiaux n’est pas la reconstruction naturelle utilisée dans la convergence FtL–LWR classique. En revanche, cette approche devient pertinente dans un cadre de reconstruction depuis observations partielles ou véhicules témoins, où les données disponibles ressemblent davantage à des temps de passage mesurés par des capteurs fixes qu’à des trajectoires complètes.}
+
+
+- prendre en argument la facon de choisir les véhicules sondes : il y a 2 approches random ou celle détaillée dans le rapport : 
+
+- renvoie moi chaque code séparément (le code pour ResNet est en deux partie : une partie modèle, une partie entrainement)
+
+- je veux pouvoir remplir le code suivant : 
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.4}
+
+\resizebox{\textwidth}{!}{
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Méthode} &
+\textbf{Initialisation} &
+\textbf{CEE} &
+\textbf{Temps d’inférence} &
+\textbf{Temps d’entraînement} &
+\textbf{Paramètres / poids} \\
+\hline
+
+ResNet &
+ &
+ &
+ &
+ &
+ \\
+\hline
+
+ResNet avec méthode Colleau &
+ &
+ &
+ &
+ &
+ \\
+\hline
+
+PINNs &
+ &
+ &
+ &
+ &
+ \\
+\hline
+
+PINNs avec méthode Colleau &
+ &
+ &
+ &
+ &
+ \\
+\hline
+
+\end{tabular}
+}
+
+
+import torch
+import torch.nn as nn
+
+# =====================================================================
+# ARCHITECTURE RESNET POUR L'INTÉGRATION D'EDO (PINN)
+# =====================================================================
+
+
+class TrafficResNet(nn.Module):
+    def __init__(
+        self,
+        n_gaps,
+        N_total,
+        L_v,
+        v_max,
+        rho_max,
+        dt_h,
+        num_steps,
+        x_0_followers,
+        x_0_leader,
+        z_bar,
+    ):
+        super(TrafficResNet, self).__init__()
+        self.N = N_total
+        self.L_v = L_v
+        self.v_max = v_max
+        self.rho_max = rho_max
+        self.dt = dt_h
+        self.num_steps = num_steps
+
+        self.x_0_followers = x_0_followers
+        self.x_0_leader = x_0_leader
+        self.z_bar = z_bar
+
+        init_alpha = torch.ones(n_gaps, dtype=torch.float32) * (self.N / n_gaps)
+        self.alpha = nn.Parameter(init_alpha)
+
+    def physics_activation(self, gap):
+        """Loi de Greenshields : v(rho) = vmax * (1 - rho/rho_max)"""
+        rho = self.alpha / (gap + 1e-6)
+        v = self.v_max * (1.0 - rho / self.rho_max)
+        return torch.clamp(v, min=0.0, max=self.v_max)
+
+    def forward(self, return_history=False, require_grad_history=False):
+        """
+        [MODIFICATION]
+        :param require_grad_history: Si True, retourne l'historique complet en tant que
+                                     tenseur PyTorch (conserve le graphe de calcul pour la loss continue).
+        """
+        import numpy as np
+
+        x = self.x_0_followers.clone()
+
+        # [MODIFICATION] Initialisation des listes d'historique adaptées
+        if require_grad_history:
+            history_tensor = [x]
+
+        if return_history:
+            history_followers = [x.detach().numpy().copy()]
+            history_leader = [self.x_0_leader.item()]
+
+        for step in range(self.num_steps):
+            t = step * self.dt
+            x_leader_t = self.x_0_leader + self.v_max * t
+            x_next = torch.cat([x[1:], torch.tensor([x_leader_t], device=x.device)])
+
+            gap = x_next - x
+            v = self.physics_activation(gap)
+
+            # Euler Explicit (Residual Connection)
+            x = x + v * self.dt
+
+            # [MODIFICATION] Stockage différenciable pour l'Approche 3
+            if require_grad_history:
+                history_tensor.append(x)
+
+            if return_history:
+                history_followers.append(x.detach().numpy().copy())
+                history_leader.append(x_leader_t.item())
+
+        # [MODIFICATION] Retour conditionnel selon le besoin (Entraînement vs Inférence)
+        if require_grad_history:
+            return torch.stack(history_tensor)  # Shape: (num_steps + 1, n_followers)
+
+        if return_history:
+            return x, np.array(history_followers), np.array(history_leader)
+
+        return x
+
+
+def project_alpha(alpha, z_bar, N_total):
+    """Projection dans l'Espace Admissible A_N (Eq 17)"""
+    with torch.no_grad():
+        alpha.clamp_(min=1.0)
+        alpha = torch.min(alpha, z_bar)
+        sum_alpha = torch.sum(alpha)
+        alpha.mul_(N_total / sum_alpha)
+        alpha.clamp_(min=1.0)
+    return alpha
+
+
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import os
+from ResNet_model import TrafficResNet, project_alpha
+
+# =====================================================================
+# CONFIGURATION MODULABLE
+# =====================================================================
+# [MODIFICATION] Regroupement dans un dictionnaire pour centraliser les choix
+CONFIG = {
+    "BASE_DIR": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha",
+    "DATA_PATH": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv",
+    "PORTION_PROBE": 0.2,
+    "EPOCHS": 200,
+    "LEARNING_RATE": 0.5,
+    "LOSS_POLICY": "continuous",  # Options: "continuous" (Approche 3) ou "final_point" (Approche 2)
+    "N_TOTAL": 1000,
+    "L_V": 0.005,
+    "V_MAX": 50.0,
+}
+CONFIG["RHO_MAX"] = 1.0 / CONFIG["L_V"]
+
+
+def main():
+    if not os.path.exists(CONFIG["DATA_PATH"]):
+        raise FileNotFoundError(f"Fichier introuvable: {CONFIG['DATA_PATH']}")
+
+    print("Chargement des données...")
+    df = pd.read_csv(CONFIG["DATA_PATH"])
+
+    num_pvs = max(2, int(CONFIG["PORTION_PROBE"] * CONFIG["N_TOTAL"]))
+    n_gaps = num_pvs - 1
+
+    t_min_s, t_max_s = df["Time_s"].min(), df["Time_s"].max()
+    T_h = (t_max_s - t_min_s) / 3600.0
+
+    times_sorted = np.sort(df["Time_s"].unique())
+    dt_h = (times_sorted[1] - times_sorted[0]) / 3600.0
+    num_steps = int(round(T_h / dt_h))
+
+    # Sélection des probes (politique uniforme par défaut)
+    pv_ids = np.linspace(0, CONFIG["N_TOTAL"] - 1, num_pvs, dtype=int)
+
+    # [MODIFICATION] Calcul de la vérité terrain : alpha réel = nombre de véhicules dans le segment
+    # Cela correspond exactement à la différence des indices des probes
+    alpha_true = np.diff(pv_ids)
+
+    # --- Extraction des données cibles ---
+    # [MODIFICATION] Extraction de l'historique spatio-temporel complet pour l'Approche 3
+    df_pvs = df[df["Vehicle_ID"].isin(pv_ids)].pivot(
+        index="Time_s", columns="Vehicle_ID", values="Position_km"
+    )
+
+    # y_target_history contient les trajectoires de tous les véhicules témoins suiveurs sur tout [0, T]
+    y_target_history = torch.tensor(df_pvs.values[:, :-1], dtype=torch.float32)
+    y_target_final = y_target_history[-1]  # Pour l'Approche 2 (fallback)
+
+    x_0_followers = y_target_history[0]
+    x_0_leader = torch.tensor(df_pvs.values[0, -1], dtype=torch.float32)
+
+    y_bar = torch.tensor(
+        df_pvs.values[-1, :], dtype=torch.float32
+    )  # Toutes positions à T
+    gap_0 = (
+        x_0_followers[1:] - x_0_followers[:-1]
+        if len(x_0_followers) > 1
+        else torch.tensor([])
+    )
+    gap_0 = torch.cat([gap_0, torch.tensor([x_0_leader - x_0_followers[-1]])])
+    gap_T = y_bar[1:] - y_bar[:-1]
+
+    z_bar = torch.min(gap_0 / CONFIG["L_V"], gap_T / CONFIG["L_V"])
+
+    # ---------- INITIALISATION ----------
+    model = TrafficResNet(
+        n_gaps,
+        CONFIG["N_TOTAL"],
+        CONFIG["L_V"],
+        CONFIG["V_MAX"],
+        CONFIG["RHO_MAX"],
+        dt_h,
+        num_steps,
+        x_0_followers,
+        x_0_leader,
+        z_bar,
+    )
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=CONFIG["LEARNING_RATE"])
+
+    loss_history = []
+    alpha_history = []
+
+    # ---------- BOUCLE D'ENTRAÎNEMENT ----------
+    print(f"\nOptimisation en cours... (Politique: {CONFIG['LOSS_POLICY']})")
+    for epoch in range(CONFIG["EPOCHS"] + 1):
+        optimizer.zero_grad()
+
+        # [MODIFICATION] Choix dynamique de la fonction de perte
+        if CONFIG["LOSS_POLICY"] == "continuous":
+            # Approche 3 : Comparaison sur tout l'historique
+            x_pred_history = model(require_grad_history=True)
+            loss = criterion(x_pred_history, y_target_history)
+        else:
+            # Approche 2 : Comparaison uniquement à t=T
+            x_pred_T = model(require_grad_history=False)
+            loss = criterion(x_pred_T, y_target_final)
+
+        loss.backward()
+        optimizer.step()
+
+        model.alpha.data = project_alpha(model.alpha.data, model.z_bar, model.N)
+
+        loss_history.append(loss.item())
+        alpha_history.append(model.alpha.detach().clone().numpy())
+
+        if epoch % 100 == 0:
+            print(f"Epoch {epoch:04d} | MSE Loss: {loss.item():.6f}")
+
+    # ---------- PRÉDICTION FINALE ----------
+    _, hist_followers, hist_leader = model(return_history=True)
+    alpha_optimise = model.alpha.detach().numpy()
+
+    # [CORRECTION] Calcul de la VRAIE densité macroscopique à t=T
+    # On utilise y_bar qui contient les VRAIES positions de toutes les sondes à t=T
+    true_gaps = y_bar[1:] - y_bar[:-1]
+    density_true = alpha_true / true_gaps.numpy()
+
+    results = {
+        "loss_history": loss_history,
+        "alpha_history": np.array(alpha_history),
+        "alpha_true": alpha_true,  # NOUVEAU
+        "density_true": density_true,  # NOUVEAU
+        "hist_followers": hist_followers,
+        "hist_leader": hist_leader,
+        "times_h": np.linspace(0, T_h, num_steps + 1),
+        "alpha_optimise": alpha_optimise,
+        "y_target_followers": y_target_final.numpy(),
+        "CONFIG": CONFIG,  # Sauvegarde de la config complète
+    }
+
+    results_dir = os.path.join(CONFIG["BASE_DIR"], "training_results")
+    os.makedirs(results_dir, exist_ok=True)
+    filename = f"ResNet_probe{CONFIG['PORTION_PROBE']}_ep{CONFIG['EPOCHS']}_loss-{CONFIG['LOSS_POLICY']}.pt"
+    filepath = os.path.join(results_dir, filename)
+    torch.save(results, filepath)
+    print(f"Résultats sauvegardés dans :\n{filepath}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+Modèle pinn : 
+import os
+import torch
+import torch.nn as nn
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import qmc
+import seaborn as sns
+from scipy import stats
+
+# ==========================================
+# 1. PINN Architecture
+# ==========================================
+class TrafficPINN(nn.Module):
+    def __init__(self, t_max, x_max, layers=[2, 32, 32, 32, 32, 1]):
+        super().__init__()
+        self.t_max = t_max
+        self.x_max = x_max
+        
+        self.hidden_layers = nn.ModuleList()
+        for i in range(len(layers) - 2):
+            self.hidden_layers.append(nn.Linear(layers[i], layers[i+1]))
+            self.hidden_layers.append(nn.Tanh())
+            
+        self.output_layer = nn.Linear(layers[-2], layers[-1])
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, t, x):
+        # Internal Normalization to [-1, 1]
+        t_norm = 2.0 * (t / self.t_max) - 1.0
+        x_norm = 2.0 * (x / self.x_max) - 1.0
+        
+        inputs = torch.cat([t_norm, x_norm], dim=1)
+        for layer in self.hidden_layers:
+            inputs = layer(inputs)
+            
+        return self.sigmoid(self.output_layer(inputs))
+
+# ==========================================
+# 2. Physics Loss Computation
+# ==========================================
+def compute_physics_loss(model, t_colloc, x_colloc, v_max, gamma=0.05):
+    t_colloc.requires_grad_(True)
+    x_colloc.requires_grad_(True)
+    
+    rho = model(t_colloc, x_colloc)
+    
+    rho_t = torch.autograd.grad(rho, t_colloc, grad_outputs=torch.ones_like(rho), create_graph=True)[0]
+    rho_x = torch.autograd.grad(rho, x_colloc, grad_outputs=torch.ones_like(rho), create_graph=True)[0]
+    rho_xx = torch.autograd.grad(rho_x, x_colloc, grad_outputs=torch.ones_like(rho_x), create_graph=True)[0]
+    
+    # Viscous Greenshields LWR Residual
+    flux_derivative = v_max * (1.0 - 2.0 * rho)
+    residual = rho_t + flux_derivative * rho_x - gamma * rho_xx
+    
+    return torch.mean(residual**2)
+
+# ==========================================
+# 3. Data Loading & LHS Generation
+# ==========================================
+def load_and_split_data(csv_path, pv_ratio=0.10, v_max=50.0, seed = 42):
+    print(f"Loading data from {csv_path}...")
+    df = pd.read_csv(csv_path)
+    
+    # Convert Time_s to Time_h for physical consistency with Velocity_kmh
+    df['Time_h'] = df['Time_s'] / 3600.0
+    
+    # Calculate Ground Truth Density using inverted Greenshields
+    df['Density'] = 1.0 - (df['Velocity_kmh'] / v_max)
+    
+    t_max = df['Time_h'].max()
+    x_max = df['Position_km'].max()
+    
+    # Identify unique vehicles and sample 10% for PVs
+    unique_vehicles = df['Vehicle_ID'].unique()
+    num_pvs = int(len(unique_vehicles) * pv_ratio)
+    
+    # Randomly select PVs
+    np.random.seed(seed) # For reproducibility
+    pv_ids = np.random.choice(unique_vehicles, num_pvs, replace=False)
+    
+    # Split Dataset
+    train_df = df[df['Vehicle_ID'].isin(pv_ids)]
+    test_df = df[~df['Vehicle_ID'].isin(pv_ids)] # The 90% unobserved
+    
+    print(f"Data Split: {len(train_df)} training points (10%), {len(test_df)} test points (90%).")
+    return train_df, test_df, t_max, x_max, pv_ids
+
+def generate_lhs_collocation(num_points, t_max, x_max):
+    # Latin Hypercube Sampling using SciPy
+    sampler = qmc.LatinHypercube(d=2, seed=42)
+    sample = sampler.random(n=num_points)
+    
+    # Scale from [0, 1] to physical bounds
+    t_colloc = sample[:, 0] * t_max
+    x_colloc = sample[:, 1] * x_max
+    
+    return t_colloc, x_colloc
+
+def generate_all_collocation_epochs(num_points, num_epochs, t_max, x_max, device, seed=42):
+    print(f"Pre-computing LHS collocation points for {num_epochs} epochs ({num_points} points/epoch)...")
+    
+    # Generate all M * N points in one single highly-efficient LHS call
+    total_points = num_points * num_epochs
+    sampler = qmc.LatinHypercube(d=2, seed=seed)
+    sample = sampler.random(n=total_points)
+    
+    # Scale bounds
+    t_colloc_np = sample[:, 0] * t_max
+    x_colloc_np = sample[:, 1] * x_max
+    
+    # Convert to tensors and reshape to (num_epochs, num_points, 1)
+    t_colloc_tensor = torch.tensor(t_colloc_np, dtype=torch.float32).view(num_epochs, num_points, 1).to(device)
+    x_colloc_tensor = torch.tensor(x_colloc_np, dtype=torch.float32).view(num_epochs, num_points, 1).to(device)
+    
+    return t_colloc_tensor, x_colloc_tensor
+
+
+# ==========================================
+# 4. Adaptive Weight Calculation
+# ==========================================
+
+def calculate_pv_weights(train_df, max_weight_cap=5.0):
+    """
+    Calculates weights inversely proportional to the mean time gap between PVs
+    at fixed 10-meter (0.01 km) spatial milestones.
+    """
+    # 1. Define the 10m (0.01 km) milestones based on the dataset's physical bounds
+    x_min = train_df['Position_km'].min()
+    x_max = train_df['Position_km'].max()
+    milestones = np.arange(x_min, x_max + 0.01, 0.01) 
+    
+    crossing_times = []
+    
+    # 2. Calculate exact crossing times for each PV using linear interpolation
+    grouped = train_df.groupby('Vehicle_ID')
+    for pv_id, group in grouped:
+        # Sort chronologically to ensure trajectory moves forward
+        group = group.sort_values('Time_s')
+        
+        # Drop strictly stationary duplicate positions so numpy interpolation doesn't fail
+        group = group.drop_duplicates(subset=['Position_km'], keep='first')
+        
+        x_pv = group['Position_km'].values
+        t_pv = group['Time_s'].values
+        
+        if len(x_pv) < 2:
+            continue # Need at least 2 points to interpolate
+            
+        # Filter milestones to only those this specific vehicle actually crossed
+        valid_milestones = milestones[(milestones >= x_pv.min()) & (milestones <= x_pv.max())]
+        
+        # Interpolate exact time (Time_s) for each spatial milestone (Position_km)
+        # This executes the "uniform repartition of distance traveled during a second"
+        t_cross = np.interp(valid_milestones, x_pv, t_pv)
+        
+        for m, t in zip(valid_milestones, t_cross):
+            crossing_times.append({'Milestone': m, 'Vehicle_ID': pv_id, 'Time_s': t})
+            
+    # 3. Create a dataframe of all milestone crossing events
+    cross_df = pd.DataFrame(crossing_times)
+    
+    # Sort by Milestone, then by Time to order vehicles sequentially at each physical location
+    cross_df = cross_df.sort_values(['Milestone', 'Time_s'])
+    
+    # 4. Calculate Time Gaps at each milestone
+    # The vehicle that crossed before is 'in front', the one after is 'behind'
+    cross_df['gap_front'] = cross_df.groupby('Milestone')['Time_s'].diff() # t_current - t_front
+    cross_df['gap_behind'] = cross_df.groupby('Milestone')['Time_s'].diff(-1).abs() # t_behind - t_current
+    
+    # Handle edge cases (first vehicle to cross a milestone only has a behind gap, etc.)
+    cross_df['gap_front'] = cross_df['gap_front'].fillna(cross_df['gap_behind'])
+    cross_df['gap_behind'] = cross_df['gap_behind'].fillna(cross_df['gap_front'])
+    
+    # Mean time gap at this specific milestone for this specific vehicle
+    cross_df['mean_gap_at_m'] = (cross_df['gap_front'] + cross_df['gap_behind']) / 2.0
+    
+    # 5. Average the gaps across all milestones for each PV
+    pv_mean_time_gaps = cross_df.groupby('Vehicle_ID')['mean_gap_at_m'].mean()
+    
+    # 6. Apply Inverse Weighting: smaller time gap (dense traffic) = higher weight
+    # Added tiny epsilon (1e-6) to prevent division by zero if two PVs cross exactly simultaneously
+    raw_weights = 1.0 / (pv_mean_time_gaps**3 + 1e-6)
+    #raw_weights = pv_mean_time_gaps**3
+    print(f"raw_weights : {raw_weights}")
+    
+    # 7. Normalize weights so they average to 1.0
+    normalized_weights = raw_weights / raw_weights.mean()
+    
+    # 8. Cap maximum weights to preserve gradient stability
+    clipped_weights = np.clip(normalized_weights, a_min=0.1, a_max=max_weight_cap)
+    
+    # 9. Map back to the original training dataframe
+    final_weights_dict = clipped_weights.to_dict()
+    
+    train_df_out = train_df.copy()
+    train_df_out['Weight'] = train_df_out['Vehicle_ID'].map(final_weights_dict)
+    
+    # Fallback to weight 1.0 for any vehicle that didn't cross a milestone (e.g., stationary entire time)
+    train_df_out['Weight'] = train_df_out['Weight'].fillna(1.0)
+    
+    return train_df_out
+
+def train_pinn_with_weights(csv_path, t_colloc_all, x_colloc_all, epochs=5000, num_colloc=10000, mu=0.1, gamma=0.05, v_max=50.0, use_adaptive=False, seed = 42):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Training on device: {device}")
+    
+    # 1. Prepare Data
+    train_df, test_df, t_max, x_max, pv_ids = load_and_split_data(csv_path, pv_ratio=0.10, v_max=v_max, seed = seed)
+
+    # Apply weights if adaptive mode is ON
+    if use_adaptive:
+        train_df = calculate_pv_weights(train_df, pv_ids)
+        w_data = torch.tensor(train_df['Weight'].values, dtype=torch.float32).view(-1, 1).to(device)
+    else:
+        # Uniform weights of 1.0
+        w_data = torch.ones((len(train_df), 1), dtype=torch.float32).to(device)
+    
+    # Convert training data to tensors
+    t_data = torch.tensor(train_df['Time_h'].values, dtype=torch.float32).view(-1, 1).to(device)
+    x_data = torch.tensor(train_df['Position_km'].values, dtype=torch.float32).view(-1, 1).to(device)
+    rho_data = torch.tensor(train_df['Density'].values, dtype=torch.float32).view(-1, 1).to(device)
+    
+    # Convert test data for Current Estimation Error (CEE)
+    t_test = torch.tensor(test_df['Time_h'].values, dtype=torch.float32).view(-1, 1).to(device)
+    x_test = torch.tensor(test_df['Position_km'].values, dtype=torch.float32).view(-1, 1).to(device)
+    rho_test = torch.tensor(test_df['Density'].values, dtype=torch.float32).view(-1, 1).to(device)
+    
+    # 2. Initialize Model and Optimizer
+    model = TrafficPINN(t_max, x_max).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    
+    # 3. Training Loop
+    epochs_logged = []
+    loss_total_history = []
+    loss_data_history = []
+    loss_phys_history = []
+    cee_history = []
+    
+    # Track the best model based on CEE (Simple Early Stopping mechanic)
+    best_cee = float('inf')
+    best_model_state = None
+    
+    for epoch in range(epochs):
+        model.train()
+        optimizer.zero_grad()
+        
+        # Supervised Weighing Data Loss (PVs)
+        rho_pred = model(t_data, x_data)
+        # Multiply the squared error by the personalized PV weights
+        loss_data = torch.mean(w_data * (rho_pred - rho_data)**2)
+
+        # Extract this epoch's collocation points
+        t_colloc = t_colloc_all[epoch]
+        x_colloc = x_colloc_all[epoch]
+        
+        # Unsupervised Physics Loss (LHS Collocation points)
+        loss_phys = compute_physics_loss(model, t_colloc, x_colloc, v_max, gamma)
+        
+        # Combined Loss
+        loss_total = mu * loss_data + (1.0 - mu) * loss_phys
+        
+        loss_total.backward()
+        optimizer.step()
+        
+        # 4. Evaluation and Logging
+        if epoch % 100 == 0 or epoch == epochs - 1:
+            model.eval()
+            with torch.no_grad():
+                # Compute CEE on the 90% unobserved data
+                rho_test_pred = model(t_test, x_test)
+                cee = torch.mean((rho_test_pred - rho_test)**2).item()
+                
+                # Save best model
+                if cee < best_cee:
+                    best_cee = cee
+                    best_model_state = model.state_dict()
+                
+            epochs_logged.append(epoch)
+            loss_total_history.append(loss_total.item())
+            loss_data_history.append(loss_data.item())
+            loss_phys_history.append(loss_phys.item())
+            cee_history.append(cee)
+            
+            print(f"Epoch {epoch:04d} | Total: {loss_total.item():.6f} | Data: {loss_data.item():.6f} | Phys: {loss_phys.item():.6f} | CEE: {cee:.6f}")
+            
+    # Restore the best weights before returning
+    model.load_state_dict(best_model_state)
+    print(f"Training finished. Restored best model weights with CEE: {best_cee:.6f}")
+    
+    return model, epochs_logged, loss_total_history, loss_data_history, loss_phys_history, cee_history
+
+# ==========================================
+# 2. Monte Carlo Evaluation Loop
+# ==========================================
+def evaluate_adaptive_weights_with_history(csv_file, t_colloc_all, x_colloc_all, num_runs=20, epochs=3000):
+    all_cees_base = []
+    all_cees_adapt = []
+    
+    for i in range(num_runs):
+        seed = 42 + i * 10
+        print(f"\n--- Starting Run {i+1}/{num_runs} (Seed: {seed}) ---")
+        
+        # Train Base
+        _, epochs_logged, _, _, _, cees_base = train_pinn_with_weights(
+            csv_file, t_colloc_all, x_colloc_all, epochs=epochs, use_adaptive=False, seed=seed
+        )
+        
+        # Train Adaptive
+        _, _, _, _, _, cees_adapt = train_pinn_with_weights(
+            csv_file, t_colloc_all, x_colloc_all, epochs=epochs, use_adaptive=True, seed=seed
+        )
+        
+        all_cees_base.append(cees_base)
+        all_cees_adapt.append(cees_adapt)
+        
+    # Convert lists to 2D numpy arrays (Shape: [num_runs, num_logged_epochs])
+    return np.array(all_cees_base), np.array(all_cees_adapt), epochs_logged
+
+# ==========================================
+# 3. Plotting the Findings
+# ==========================================
+def plot_monte_carlo_cee_evolution(all_cees_base, all_cees_adapt, epochs_logged):
+    # Calculate Mean and Standard Deviation across all runs at each epoch step
+    mean_base = np.mean(all_cees_base, axis=0)
+    std_base = np.std(all_cees_base, axis=0)
+    
+    mean_adapt = np.mean(all_cees_adapt, axis=0)
+    std_adapt = np.std(all_cees_adapt, axis=0)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # ---------------------------------------------------------
+    # Panel 1 (Left): CEE Evolution with Error Bars
+    # ---------------------------------------------------------
+    # We use capsize to add the flat lines at the end of the error bars
+    # Assuming logging happens every 100 epochs, markevery=1 places a marker at each logged step
+    ax1.errorbar(epochs_logged, mean_base, yerr=std_base, label='Uniform Weights (Mean ± Std)', 
+                 color='black', linestyle='-', marker='o', markersize=4, capsize=3, alpha=0.8)
+                 
+    ax1.errorbar(epochs_logged, mean_adapt, yerr=std_adapt, label='Adaptive Weights (Mean ± Std)', 
+                 color='red', linestyle='--', marker='s', markersize=4, capsize=3, alpha=0.8)
+    
+    ax1.set_yscale('log')
+    ax1.set_xlabel('Epochs', fontsize=12)
+    ax1.set_ylabel('Current Estimation Error (CEE)', fontsize=12)
+    ax1.set_title('CEE Evolution across Monte Carlo Runs', fontsize=14)
+    ax1.legend(fontsize=11)
+    ax1.grid(True, which="both", ls="--", alpha=0.4)
+    
+    # ---------------------------------------------------------
+    # Panel 2 (Right): Final CEE Distribution
+    # ---------------------------------------------------------
+    final_base = all_cees_base[:, -1]
+    final_adapt = all_cees_adapt[:, -1]
+    
+    ax2.boxplot([final_base, final_adapt], tick_labels=['Uniform Weights', 'Adaptive Weights'], 
+                patch_artist=True, boxprops=dict(facecolor="lightgray"))
+                
+    ax2.set_ylabel('Final CEE', fontsize=12)
+    ax2.set_title('Distribution of Final Validation Error', fontsize=14)
+    ax2.grid(True, axis='y', ls="--", alpha=0.4)
+    
+    plt.tight_layout()
+    plt.savefig("experimentations/bastien/graphs/monte_carlo_cee_errorbars.png", dpi=150)
+    plt.show()
+
+# ==========================================
+# Run the Code
+# ==========================================
+if __name__ == '__main__':
+    csv_file = "experimentations/bastien/datasets/traffic_N1000_rarefaction.csv" 
+    
+    if os.path.exists(csv_file):
+        # Run different random initializations
+        
+        num_runs = 10
+        epochs = 3000
+        num_colloc = 2000
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Quick read to get bounds before generation
+        df_temp = pd.read_csv(csv_file)
+        t_max_global = (df_temp['Time_s'] / 3600.0).max()
+        x_max_global = df_temp['Position_km'].max()
+        
+        # 1. PRE-COMPUTE ALL EPOCH COLLOCATION POINTS ONCE
+        t_colloc_all, x_colloc_all = generate_all_collocation_epochs(
+            num_points=num_colloc, 
+            num_epochs=epochs, 
+            t_max=t_max_global, 
+            x_max=x_max_global, 
+            device=device
+        )
+
+        # Plot one time with a point at each 100 epochs
+        all_cees_base, all_cees_adapt, epochs_logged = evaluate_adaptive_weights_with_history(
+            csv_file,
+            t_colloc_all,
+            x_colloc_all,
+            num_runs,
+            epochs
+        )
+        plot_monte_carlo_cee_evolution(all_cees_base, all_cees_adapt, epochs_logged)
+
+    else:
+        print(f"Dataset {csv_file} not found.")

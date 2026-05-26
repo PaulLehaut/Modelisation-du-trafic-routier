@@ -1,5 +1,5 @@
 import os
-import time  # [AJOUT] Pour le stockage du temps d'entraînement et d'inférence
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -28,7 +28,6 @@ class TrafficPINN(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, t, x):
-        # Internal Normalization to [-1, 1]
         t_norm = 2.0 * (t / self.t_max) - 1.0
         x_norm = 2.0 * (x / self.x_max) - 1.0
 
@@ -58,7 +57,6 @@ def compute_physics_loss(model, t_colloc, x_colloc, v_max, gamma=0.05):
         rho_x, x_colloc, grad_outputs=torch.ones_like(rho_x), create_graph=True
     )[0]
 
-    # Viscous Greenshields LWR Residual
     flux_derivative = v_max * (1.0 - 2.0 * rho)
     residual = rho_t + flux_derivative * rho_x - gamma * rho_xx
 
@@ -68,9 +66,9 @@ def compute_physics_loss(model, t_colloc, x_colloc, v_max, gamma=0.05):
 # ==========================================
 # 3. Data Loading & LHS Generation
 # ==========================================
-# [MODIFICATION] Ajout de l'argument de méthode de sélection globale pour correspondre au rapport
+# [MODIFICATION] Renommage de l'argument par défaut en "adaptative"
 def load_and_split_data(
-    csv_path, pv_ratio=0.10, v_max=50.0, seed=42, selection_method="random"
+    csv_path, pv_ratio=0.10, v_max=50.0, seed=42, selection_method="adaptative"
 ):
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
@@ -84,12 +82,11 @@ def load_and_split_data(
     unique_vehicles = df["Vehicle_ID"].unique()
     num_pvs = int(len(unique_vehicles) * pv_ratio)
 
-    # [MODIFICATION] Prise en compte explicite de la méthode de choix demandée
     if selection_method == "random":
         np.random.seed(seed)
         pv_ids = np.random.choice(unique_vehicles, num_pvs, replace=False)
-    elif selection_method == "colleau":
-        # Utilisation d'une méthode de sélection déterministe par pas régulier
+    # [MODIFICATION] Renommage de la méthode
+    elif selection_method == "adaptative":
         pv_ids = unique_vehicles[
             np.linspace(0, len(unique_vehicles) - 1, num_pvs, dtype=int)
         ]
@@ -134,7 +131,7 @@ def generate_all_collocation_epochs(
 
 
 # ==========================================
-# 4. Adaptive Weight Calculation (Méthode Colleau Temporelle)
+# 4. Adaptive Weight Calculation
 # ==========================================
 def calculate_pv_weights(train_df, max_weight_cap=5.0):
     x_min = train_df["Position_km"].min()
@@ -188,6 +185,7 @@ def calculate_pv_weights(train_df, max_weight_cap=5.0):
 # ==========================================
 # 5. Training Function
 # ==========================================
+# [MODIFICATION] Renommage de l'argument par défaut en "adaptative"
 def train_pinn_with_weights(
     csv_path,
     t_colloc_all,
@@ -197,13 +195,13 @@ def train_pinn_with_weights(
     mu=0.1,
     gamma=0.05,
     v_max=50.0,
+    rho_max=200.0,
     use_adaptive=False,
     seed=42,
-    selection_method="random",
+    selection_method="adaptative",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Mesure du temps de chargement et split des données
     train_df, test_df, t_max, x_max, pv_ids = load_and_split_data(
         csv_path,
         pv_ratio=0.10,
@@ -266,7 +264,6 @@ def train_pinn_with_weights(
     best_cee = float("inf")
     best_model_state = None
 
-    # [AJOUT] Début de la mesure du temps d'entraînement global
     start_train_time = time.time()
 
     for epoch in range(epochs):
@@ -288,13 +285,10 @@ def train_pinn_with_weights(
         if epoch % 100 == 0 or epoch == epochs - 1:
             model.eval()
             with torch.no_grad():
-                # [AJOUT] Calcul précis du temps d'inférence spécifique
-                start_inf = time.time()
                 rho_test_pred = model(t_test, x_test)
-                inference_time_step = time.time() - start_inf
-
-                # Calcul formel de la CEE demandée sur l'échantillon test non observé
-                cee = torch.mean((rho_test_pred - rho_test) ** 2).item()
+                cee = torch.mean(
+                    ((rho_test_pred * rho_max) - (rho_test * rho_max)) ** 2
+                ).item()
 
                 if cee < best_cee:
                     best_cee = cee
@@ -306,12 +300,9 @@ def train_pinn_with_weights(
             loss_phys_history.append(loss_phys.item())
             cee_history.append(cee)
 
-    # [AJOUT] Calcul final de la durée totale d'entraînement
     total_training_time = time.time() - start_train_time
-
     model.load_state_dict(best_model_state)
 
-    # [AJOUT] Sauvegarde systématique dans un fichier .pt explicite
     db_name = os.path.splitext(os.path.basename(csv_path))[0]
     results_to_save = {
         "model_state": best_model_state,
@@ -328,9 +319,6 @@ def train_pinn_with_weights(
 
     save_filename = f"Pinn_epochs{epochs}_mu{mu}_method-{selection_method}_weights-{use_adaptive}_{db_name}.pt"
     torch.save(results_to_save, save_filename)
-    print(
-        f"Modèle PINN enregistré sous: {save_filename} | Temps d'entrainement: {total_training_time:.2f}s"
-    )
 
     return (
         model,

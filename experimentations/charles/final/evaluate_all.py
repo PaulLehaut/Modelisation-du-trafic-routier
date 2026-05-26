@@ -1,12 +1,13 @@
-# Fichier : experimentations/charles/final/evaluate_all.py
-
 import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+import seaborn as sns  # [MODIFICATION] Correction de l'import seaborn (sns au lieu de pd)
 import pandas as pd
 import time
+import hashlib
+import json
+
 from ResNet_training import train_resnet
 from pinn import train_pinn_with_weights, generate_all_collocation_epochs
 
@@ -16,11 +17,13 @@ from pinn import train_pinn_with_weights, generate_all_collocation_epochs
 DATA_PATH = r"data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv"
 RESULTS_DIR = r"experimentations\charles\final\training_results"
 GRAPHICS_DIR = r"experimentations\charles\final\graphics"
+CACHE_DIR = r"experimentations\charles\final\models_cache"
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(GRAPHICS_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-EPOCHS = 1000  # Réduit pour test, ajuste selon tes besoins
+EPOCHS = 2000
 SEED = 42
 
 resnet_config_base = {
@@ -37,21 +40,39 @@ resnet_config_base = {
 
 
 # ==========================================
+# FONCTIONS GESTION DU CACHE ET UTILITAIRES
+# ==========================================
+def get_cache_path(model_name, config_dict):
+    config_str = json.dumps(config_dict, sort_keys=True)
+    config_hash = hashlib.md5(config_str.encode("utf-8")).hexdigest()
+    return os.path.join(CACHE_DIR, f"{model_name}_{config_hash}.pt")
+
+
+def compute_model_weight_kb(model_or_params):
+    """Calcule le poids d'un modèle en kilo-octets (Ko)."""
+    if isinstance(model_or_params, int):
+        return (model_or_params * 4) / 1024
+    else:
+        param_size = sum(
+            p.nelement() * p.element_size() for p in model_or_params.parameters()
+        )
+        buffer_size = sum(
+            b.nelement() * b.element_size() for b in model_or_params.buffers()
+        )
+        return (param_size + buffer_size) / 1024
+
+
+# ==========================================
 # FONCTIONS DE VISUALISATION
 # ==========================================
 def plot_losses(results_dict):
-    """Génère un graphique avec la loss d'entrainement et de validation (CEE)"""
     fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
     for name, res in results_dict.items():
-        # Lissage de la loss d'entrainement pour la lisibilité
         epochs_train = np.arange(len(res["loss_train"]))
         axes[0].plot(epochs_train, res["loss_train"], label=name, alpha=0.8)
 
-        # CEE est calculée tous les X epochs
-        epochs_cee = np.linspace(
-            0, len(res["loss_train"]) - 1, len(res["cee_val"])
-        )  # [MODIFICATION] Correction de l'alignement des axes (N-1)
+        epochs_cee = np.linspace(0, len(res["loss_train"]) - 1, len(res["cee_val"]))
         axes[1].plot(epochs_cee, res["cee_val"], label=name, linestyle="--")
 
     axes[0].set_yscale("log")
@@ -68,15 +89,12 @@ def plot_losses(results_dict):
     axes[1].grid(True)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(GRAPHICS_DIR, "loss_comparison.png"))
+    plt.savefig(os.path.join(GRAPHICS_DIR, "loss_comparison_final.png"))
     plt.close()
 
 
 def plot_final_density(results_dict):
-    """Compare la densité finale réelle vs modèles"""
     plt.figure(figsize=(12, 6))
-
-    # On prend la vraie densité du premier modèle (ils partagent tous la même)
     true_density = list(results_dict.values())[0]["rho_final_true"]
     x_axis = np.arange(len(true_density))
 
@@ -89,53 +107,50 @@ def plot_final_density(results_dict):
         linestyle=":",
     )
 
-    colors = ["blue", "cyan", "red", "orange"]
+    colors = sns.color_palette("husl", len(results_dict))
     for (name, res), color in zip(results_dict.items(), colors):
-        plt.plot(
-            x_axis, res["rho_final_pred"], label=f"Pred: {name}", alpha=0.7, color=color
-        )
+        if "rho_final_pred" in res and res["rho_final_pred"] is not None:
+            plt.plot(
+                x_axis,
+                res["rho_final_pred"],
+                label=f"Pred: {name}",
+                alpha=0.7,
+                color=color,
+            )
 
     plt.title("Comparaison de la Densité Spatiale Finale (t=T)")
     plt.xlabel("Index de Segment / Espace")
     plt.ylabel("Densité (veh/km)")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(GRAPHICS_DIR, "final_density_comparison.png"))
+    plt.savefig(os.path.join(GRAPHICS_DIR, "final_density_comparison_final.png"))
     plt.close()
 
 
 def plot_spatiotemporal_evolution(results_dict, pinn_models, df_path, device):
-    """Affiche l'évolution de la densité via des coupes à des instants précis de la simulation"""
     print("\nGénération des coupes spatio-temporelles...")
     df = pd.read_csv(df_path)
-    df["Density"] = 1.0 - (df["Velocity_kmh"] / 50.0)  # V_MAX = 50.0
+    df["Density"] = (1.0 - (df["Velocity_kmh"] / 50.0)) * resnet_config_base["RHO_MAX"]
 
     t_max = (df["Time_s"] / 3600.0).max()
     x_max = df["Position_km"].max()
-
-    # Fractions du temps total N demandées
     fractions = [0.0, 1 / 3, 1 / 2, 2 / 3, 1.0]
     labels = ["t = 0", "t = N/3", "t = N/2", "t = 2N/3", "t = N"]
 
     fig, axes = plt.subplots(len(fractions), 1, figsize=(14, 18), sharex=True)
 
-    # Récupération du nombre de pas et du nombre de segments via le ResNet
-    res_base = results_dict.get("ResNet_Colleau") or results_dict.get("ResNet_Random")
+    res_base = results_dict.get("ResNet_Adaptatif") or results_dict.get("ResNet_Random")
     num_steps = len(res_base["intermediate_rhos"])
     n_gaps = len(res_base["rho_final_pred"])
 
-    # Grille spatiale normalisée pour l'inférence des PINNs
     x_grid = np.linspace(0, x_max, n_gaps)
     x_tensor = torch.tensor(x_grid, dtype=torch.float32).view(-1, 1).to(device)
 
     for i, (frac, label) in enumerate(zip(fractions, labels)):
         ax = axes[i]
-
-        # 1. Calcul des index et temps physiques
         step_idx = int(frac * (num_steps - 1))
         t_phys = frac * t_max
 
-        # 2. Trace de la Vérité Terrain (Ground Truth) approximée
         t_s_target = t_phys * 3600.0
         closest_time = df.iloc[(df["Time_s"] - t_s_target).abs().argsort()[:1]][
             "Time_s"
@@ -152,7 +167,6 @@ def plot_spatiotemporal_evolution(results_dict, pinn_models, df_path, device):
                 linewidth=2.5,
             )
 
-        # 3. Trace des densités ResNet
         for name, res in results_dict.items():
             if "ResNet" in name:
                 rho_resnet = res["intermediate_rhos"][step_idx]
@@ -163,12 +177,14 @@ def plot_spatiotemporal_evolution(results_dict, pinn_models, df_path, device):
                     alpha=0.8,
                 )
 
-        # 4. Trace des densités PINNs
         t_tensor = (torch.ones_like(x_tensor) * t_phys).to(device)
         for name, model in pinn_models.items():
             model.eval()
             with torch.no_grad():
-                rho_pinn = model(t_tensor, x_tensor).cpu().numpy().flatten()
+                rho_pinn = (
+                    model(t_tensor, x_tensor).cpu().numpy().flatten()
+                    * resnet_config_base["RHO_MAX"]
+                )
             ax.plot(
                 np.arange(len(rho_pinn)),
                 rho_pinn,
@@ -187,7 +203,7 @@ def plot_spatiotemporal_evolution(results_dict, pinn_models, df_path, device):
 
     axes[-1].set_xlabel("Index de Segment / Espace", fontsize=12)
     plt.tight_layout()
-    plt.savefig(os.path.join(GRAPHICS_DIR, "spatiotemporal_evolution_snapshots.png"))
+    plt.savefig(os.path.join(GRAPHICS_DIR, "spatiotemporal_evolution_final.png"))
     plt.close()
 
 
@@ -197,131 +213,190 @@ def plot_spatiotemporal_evolution(results_dict, pinn_models, df_path, device):
 def main():
     results = {}
     pinn_models = {}
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. ResNet - Random
+    # ------------------ RESNET RANDOM ------------------
     print("\n" + "=" * 40)
-    print("--- Entrainement ResNet (Random) ---")
+    print("--- Entrainement ResNet (Standard) ---")
     conf_rr = resnet_config_base.copy()
     conf_rr["METHOD"] = "random"
-    results["ResNet_Random"] = train_resnet(conf_rr)
-    # [AJOUT] Print de vérification du succès de l'entraînement
-    print(f" -> Terminé en {results['ResNet_Random']['train_time']:.2f}s")
-    print(
-        f" -> Loss finale: {results['ResNet_Random']['loss_train'][-1]:.6f} | CEE validation: {results['ResNet_Random']['cee_val'][-1]:.6f}"
+
+    cache_path_rr = get_cache_path("ResNet_Random", conf_rr)
+    if os.path.exists(cache_path_rr):
+        results["ResNet_Random"] = torch.load(
+            cache_path_rr, map_location=device, weights_only=False
+        )
+        print(" -> Chargé depuis le cache.")
+    else:
+        results["ResNet_Random"] = train_resnet(conf_rr)
+        torch.save(results["ResNet_Random"], cache_path_rr)
+
+    results["ResNet_Random"]["weight_kb"] = compute_model_weight_kb(
+        results["ResNet_Random"]["params"]
     )
 
-    # 2. ResNet - Colleau (Pondéré)
+    # ------------------ RESNET ADAPTATIF ------------------
     print("\n" + "=" * 40)
-    print("--- Entrainement ResNet (Colleau) ---")
+    # [MODIFICATION] Renommage de Colleau à Adaptatif
+    print("--- Entrainement ResNet (Adaptatif) ---")
     conf_rc = resnet_config_base.copy()
-    conf_rc["METHOD"] = "colleau"
-    results["ResNet_Colleau"] = train_resnet(conf_rc)
-    # [AJOUT] Print de vérification du succès de l'entraînement
-    print(f" -> Terminé en {results['ResNet_Colleau']['train_time']:.2f}s")
-    print(
-        f" -> Loss finale: {results['ResNet_Colleau']['loss_train'][-1]:.6f} | CEE validation: {results['ResNet_Colleau']['cee_val'][-1]:.6f}"
+    conf_rc["METHOD"] = "adaptative"  # [MODIFICATION] Renommage
+
+    cache_path_rc = get_cache_path("ResNet_Adaptatif", conf_rc)
+    if os.path.exists(cache_path_rc):
+        results["ResNet_Adaptatif"] = torch.load(
+            cache_path_rc, map_location=device, weights_only=False
+        )
+        print(" -> Chargé depuis le cache.")
+    else:
+        results["ResNet_Adaptatif"] = train_resnet(conf_rc)
+        torch.save(results["ResNet_Adaptatif"], cache_path_rc)
+
+    results["ResNet_Adaptatif"]["weight_kb"] = compute_model_weight_kb(
+        results["ResNet_Adaptatif"]["params"]
     )
 
-    # Préparation données PINN
-    print("\nPréparation des tenseurs pour les modèles PINNs...")
+    # Préparation données PINNs
     df_temp = pd.read_csv(DATA_PATH)
     t_max = (df_temp["Time_s"] / 3600.0).max()
     x_max = df_temp["Position_km"].max()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     t_colloc, x_colloc = generate_all_collocation_epochs(
         2000, EPOCHS, t_max, x_max, device
     )
 
-    # 3. PINN - Random
-    print("\n" + "=" * 40)
-    print("--- Entrainement PINN (Random) ---")
-    pinn_model_r, e_log_r, l_tot_r, _, _, cee_r, t_train_r = train_pinn_with_weights(
-        DATA_PATH, t_colloc, x_colloc, epochs=EPOCHS, use_adaptive=False, seed=SEED
-    )
-    pinn_models["PINN_Random"] = pinn_model_r
+    # ------------------ PINNS (ABLATION STUDY) ------------------
+    # [MODIFICATION] Remplacement des anciens PINNs par les 3 configurations d'Ablation
+    pinn_configs_to_test = [
+        {
+            "name": "PINN_Hybride_Optimal",
+            "mu": 0.99,
+            "gamma": 0.05,
+            "desc": "$\mu=0.99, \gamma=0.05$",
+        },
+        {
+            "name": "PINN_Donnees_Pures",
+            "mu": 1.0,
+            "gamma": 0.05,
+            "desc": "$\mu=1.0$ (Sans physique)",
+        },
+        {
+            "name": "PINN_Physique_Pure",
+            "mu": 0.0,
+            "gamma": 0.05,
+            "desc": "$\mu=0.0$ (Sans données)",
+        },
+    ]
 
-    # Mesure Inférence PINN
-    start_inf = time.time()
-    _ = pinn_model_r(
-        # [CORRECTION] Ajout explicite de dtype=torch.float32
-        torch.tensor([[t_max]], dtype=torch.float32).to(device),
-        torch.tensor([[x_max]], dtype=torch.float32).to(device),
-    )
-    t_inf_r = time.time() - start_inf
+    for p_conf in pinn_configs_to_test:
+        name = p_conf["name"]
+        print("\n" + "=" * 40)
+        print(f"--- Entrainement {name} ---")
 
-    results["PINN_Random"] = {
-        "loss_train": l_tot_r,
-        "cee_val": cee_r,
-        "train_time": t_train_r,
-        "inf_time": t_inf_r,
-        "cee_final": cee_r[-1],
-        "params": sum(p.numel() for p in pinn_model_r.parameters()),
-        "rho_final_pred": np.zeros(
-            len(results["ResNet_Random"]["rho_final_true"])
-        ),  # Placeholder formel
-        "rho_final_true": results["ResNet_Random"]["rho_final_true"],
-    }
-    # [AJOUT] Print de vérification du succès de l'entraînement
-    print(f" -> Terminé en {t_train_r:.2f}s")
-    print(f" -> Loss finale: {l_tot_r[-1]:.6f} | CEE validation: {cee_r[-1]:.6f}")
+        cache_dict = {
+            "epochs": EPOCHS,
+            "rho_max": resnet_config_base["RHO_MAX"],
+            "use_adaptive": True,  # On utilise la méthode adaptative par défaut pour tous les PINNs comparatifs
+            "seed": SEED,
+            "n_colloc": 2000,
+            "data_path": DATA_PATH,
+            "mu": p_conf["mu"],
+            "gamma": p_conf["gamma"],
+        }
+        cache_path = get_cache_path(name, cache_dict)
 
-    # 4. PINN - Colleau (Pondéré)
-    print("\n" + "=" * 40)
-    print("--- Entrainement PINN (Colleau) ---")
-    pinn_model_c, e_log_c, l_tot_c, _, _, cee_c, t_train_c = train_pinn_with_weights(
-        DATA_PATH, t_colloc, x_colloc, epochs=EPOCHS, use_adaptive=True, seed=SEED
-    )
-    pinn_models["PINN_Colleau"] = pinn_model_c
+        if os.path.exists(cache_path):
+            cached_model = torch.load(
+                cache_path, map_location=device, weights_only=False
+            )
+            pinn_models[name] = cached_model["model"]
+            results[name] = cached_model["results"]
+            print(f" -> Chargé depuis le cache.")
+        else:
+            pinn_model, e_log, l_tot, _, _, cee_hist, t_train = train_pinn_with_weights(
+                DATA_PATH,
+                t_colloc,
+                x_colloc,
+                epochs=EPOCHS,
+                mu=p_conf["mu"],
+                gamma=p_conf["gamma"],
+                rho_max=resnet_config_base["RHO_MAX"],
+                use_adaptive=True,
+                seed=SEED,
+                selection_method="adaptative",  # [MODIFICATION] Renommage
+            )
+            pinn_models[name] = pinn_model
 
-    results["PINN_Colleau"] = {
-        "loss_train": l_tot_c,
-        "cee_val": cee_c,
-        "train_time": t_train_c,
-        "inf_time": t_inf_r,
-        "cee_final": cee_c[-1],
-        "params": sum(p.numel() for p in pinn_model_c.parameters()),
-        "rho_final_pred": np.zeros(len(results["ResNet_Random"]["rho_final_true"])),
-        "rho_final_true": results["ResNet_Random"]["rho_final_true"],
-    }
-    # [AJOUT] Print de vérification du succès de l'entraînement
-    print(f" -> Terminé en {t_train_c:.2f}s")
-    print(f" -> Loss finale: {l_tot_c[-1]:.6f} | CEE validation: {cee_c[-1]:.6f}")
+            start_inf = time.time()
+            _ = pinn_model(
+                torch.tensor([[t_max]], dtype=torch.float32).to(device),
+                torch.tensor([[x_max]], dtype=torch.float32).to(device),
+            )
+            t_inf = time.time() - start_inf
 
-    # Sauvegarde PT
-    print("\nSauvegarde des tenseurs globaux...")
-    torch.save(results, os.path.join(RESULTS_DIR, "all_models_comparisons.pt"))
+            # Inférence spatiale finale pour la visualisation
+            n_gaps_val = len(results["ResNet_Random"]["rho_final_true"])
+            x_grid = np.linspace(0, x_max, n_gaps_val)
+            x_tensor_grid = (
+                torch.tensor(x_grid, dtype=torch.float32).view(-1, 1).to(device)
+            )
+            t_tensor_grid = (torch.ones_like(x_tensor_grid) * t_max).to(device)
+            with torch.no_grad():
+                rho_final_pred = (
+                    pinn_model(t_tensor_grid, x_tensor_grid).cpu().numpy().flatten()
+                    * resnet_config_base["RHO_MAX"]
+                )
 
-    # Graphiques
-    print("Génération des graphiques...")
+            results[name] = {
+                "loss_train": l_tot,
+                "cee_val": cee_hist,
+                "train_time": t_train,
+                "inf_time": t_inf,
+                "cee_final": cee_hist[-1],
+                "params": sum(p.numel() for p in pinn_model.parameters()),
+                "weight_kb": compute_model_weight_kb(pinn_model),
+                "rho_final_pred": rho_final_pred,
+                "rho_final_true": results["ResNet_Random"]["rho_final_true"],
+            }
+            torch.save({"model": pinn_model, "results": results[name]}, cache_path)
+            print(
+                f" -> Entraînement terminé en {t_train:.1f}s | CEE Finale: {cee_hist[-1]:.2f}"
+            )
+
+    print("\nGénération des graphiques...")
     plot_losses(results)
-    plot_final_density({k: v for k, v in results.items() if "ResNet" in k})
+    plot_final_density(results)
     plot_spatiotemporal_evolution(results, pinn_models, DATA_PATH, device)
 
     # ==========================================
     # GENERATION DU CODE LATEX
     # ==========================================
+    # [MODIFICATION] Intégration des 5 modèles dans le tableau final (ResNet vs Ablation PINNs)
     print("\n" + "=" * 50)
     print("CODE LATEX À COPIER :")
     print("=" * 50)
     latex_table = f"""\\begin{{table}}[htbp]
 \\centering
-\\renewcommand{{\\arraystretch}}{{1.4}}
+\\renewcommand{{\\arraystretch}}{{1.5}}
 \\resizebox{{\\textwidth}}{{!}}{{
-\\begin{{tabular}}{{|l|c|c|c|c|c|}}
+\\begin{{tabular}}{{|l|c|c|c|c|c|p{{4.0cm}}|}}
 \\hline
-\\textbf{{Méthode}} & \\textbf{{Initialisation}} & \\textbf{{CEE}} & \\textbf{{Temps d’inférence}} & \\textbf{{Temps d’entraînement}} & \\textbf{{Paramètres / poids}} \\\\
+\\textbf{{Méthode}} & \\textbf{{Pondération sondes}} & \\textbf{{CEE}} & \\textbf{{Temps d'inférence}} & \\textbf{{Temps d'entraînement}} & \\textbf{{Poids modèle}} & \\textbf{{Paramètres spécifiques}} \\\\
 \\hline
-ResNet & Seed={SEED} & {results["ResNet_Random"]["cee_final"]:.6f} & {results["ResNet_Random"]["inf_time"]:.4f}s & {results["ResNet_Random"]["train_time"]:.1f}s & {results["ResNet_Random"]["params"]} \\\\
+ResNet & Standard & {results["ResNet_Random"]["cee_final"]:.6f} & {results["ResNet_Random"]["inf_time"]:.4f} s & {results["ResNet_Random"]["train_time"]:.1f} s & {results["ResNet_Random"]["weight_kb"]:.2f} Ko & $N=1000$, LR $={resnet_config_base["LEARNING_RATE"]}$ \\\\
 \\hline
-ResNet avec méthode Colleau & Seed={SEED} & {results["ResNet_Colleau"]["cee_final"]:.6f} & {results["ResNet_Colleau"]["inf_time"]:.4f}s & {results["ResNet_Colleau"]["train_time"]:.1f}s & {results["ResNet_Colleau"]["params"]} \\\\
+ResNet & Adaptative & {results["ResNet_Adaptatif"]["cee_final"]:.6f} & {results["ResNet_Adaptatif"]["inf_time"]:.4f} s & {results["ResNet_Adaptatif"]["train_time"]:.1f} s & {results["ResNet_Adaptatif"]["weight_kb"]:.2f} Ko & $N=1000$, LR $={resnet_config_base["LEARNING_RATE"]}$ \\\\
 \\hline
-PINNs & Seed={SEED} & {results["PINN_Random"]["cee_final"]:.6f} & {results["PINN_Random"]["inf_time"]:.4f}s & {results["PINN_Random"]["train_time"]:.1f}s & {results["PINN_Random"]["params"]} \\\\
+PINN Hybride Optimal & Adaptative & {results["PINN_Hybride_Optimal"]["cee_final"]:.6f} & {results["PINN_Hybride_Optimal"]["inf_time"]:.4f} s & {results["PINN_Hybride_Optimal"]["train_time"]:.1f} s & {results["PINN_Hybride_Optimal"]["weight_kb"]:.2f} Ko & $\mu=0.99, \gamma=0.05$ \\\\
 \\hline
-PINNs avec méthode Colleau & Seed={SEED} & {results["PINN_Colleau"]["cee_final"]:.6f} & {results["PINN_Colleau"]["inf_time"]:.4f}s & {results["PINN_Colleau"]["train_time"]:.1f}s & {results["PINN_Colleau"]["params"]} \\\\
+PINN Données Pures & Adaptative & {results["PINN_Donnees_Pures"]["cee_final"]:.6f} & {results["PINN_Donnees_Pures"]["inf_time"]:.4f} s & {results["PINN_Donnees_Pures"]["train_time"]:.1f} s & {results["PINN_Donnees_Pures"]["weight_kb"]:.2f} Ko & $\mu=1.0$ (Régression pure) \\\\
+\\hline
+PINN Physique Pure & N/A & {results["PINN_Physique_Pure"]["cee_final"]:.6f} & {results["PINN_Physique_Pure"]["inf_time"]:.4f} s & {results["PINN_Physique_Pure"]["train_time"]:.1f} s & {results["PINN_Physique_Pure"]["weight_kb"]:.2f} Ko & $\mu=0.0$ (LWR strict) \\\\
 \\hline
 \\end{{tabular}}
 }}
-\\caption{{Comparaison des performances entre ResNet et PINN avec échantillonnage aléatoire vs méthode Colleau}}
+\\caption{{Comparaison des performances : ResNet face aux différentes configurations de réseaux physiques (PINNs). Paramètres communs : Rarefaction $p={resnet_config_base["PORTION_PROBE"]}$, {EPOCHS} epochs, Seed={SEED}.}}
+\\label{{tab:comparaison_resnet_pinn_ablation}}
 \\end{{table}}"""
     print(latex_table)
 
