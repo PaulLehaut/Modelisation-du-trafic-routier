@@ -1,5 +1,3 @@
-# Fichier : experimentations/charles/final/ResNet_training.py
-
 import os
 import time
 import numpy as np
@@ -10,12 +8,9 @@ import torch.optim as optim
 from ResNet_model import TrafficResNet, project_alpha
 
 
-# [MODIFICATION] Import de la logique de poids temporels (identique au PINN)
 def calculate_pv_weights(df, pv_ids, max_weight_cap=5.0):
-    """Calcule les poids d'isolement temporel pour les sondes (Méthode Colleau)"""
     x_min, x_max = df["Position_km"].min(), df["Position_km"].max()
     milestones = np.arange(x_min, x_max + 0.01, 0.01)
-
     crossing_times = []
     grouped = df[df["Vehicle_ID"].isin(pv_ids)].groupby("Vehicle_ID")
 
@@ -26,7 +21,6 @@ def calculate_pv_weights(df, pv_ids, max_weight_cap=5.0):
         x_pv, t_pv = group["Position_km"].values, group["Time_s"].values
         if len(x_pv) < 2:
             continue
-
         valid_milestones = milestones[
             (milestones >= x_pv.min()) & (milestones <= x_pv.max())
         ]
@@ -49,25 +43,21 @@ def calculate_pv_weights(df, pv_ids, max_weight_cap=5.0):
     normalized = raw_weights / raw_weights.mean()
     clipped = np.clip(normalized, 0.1, max_weight_cap)
 
-    # Mapper sur l'ordre exact de pv_ids
-    weight_dict = clipped.to_dict()
+    weight_dict = dict(enumerate(clipped))
     weights_array = np.array([weight_dict.get(pid, 1.0) for pid in pv_ids])
     return torch.tensor(weights_array, dtype=torch.float32)
 
 
-# [MODIFICATION] Fonction d'entrainement principal encapsulée
 def train_resnet(config):
     df = pd.read_csv(config["DATA_PATH"])
     unique_vehicles = np.sort(df["Vehicle_ID"].unique())
     num_pvs = max(2, int(config["PORTION_PROBE"] * config["N_TOTAL"]))
 
-    # Sélection
     if config["METHOD"] == "random":
         np.random.seed(config["SEED"])
         pv_ids = np.sort(np.random.choice(unique_vehicles, num_pvs, replace=False))
-        weights = torch.ones(num_pvs - 1, dtype=torch.float32)  # Pas de poids
-    else:  # "colleau"
-        # Pour une vraie comparaison, on prend les mêmes sondes aléatoires mais avec application des poids
+        weights = torch.ones(num_pvs - 1, dtype=torch.float32)
+    else:
         np.random.seed(config["SEED"])
         pv_ids = np.sort(np.random.choice(unique_vehicles, num_pvs, replace=False))
         weights = calculate_pv_weights(df, pv_ids)
@@ -81,7 +71,9 @@ def train_resnet(config):
     ) / 3600.0
     num_steps = int(round(T_h / dt_h))
 
+    # Vérité terrain
     alpha_true = np.diff(pv_ids)
+
     df_pvs = df[df["Vehicle_ID"].isin(pv_ids)].pivot(
         index="Time_s", columns="Vehicle_ID", values="Position_km"
     )
@@ -114,19 +106,15 @@ def train_resnet(config):
     )
     optimizer = optim.Adam(model.parameters(), lr=config["LEARNING_RATE"])
 
-    loss_history, cee_history = [], []
+    loss_history, cee_history, mae_history, alpha_history = [], [], [], []
     start_train = time.time()
-
-    # Vérité terrain pour Validation (CEE)
-    test_df = df[~df["Vehicle_ID"].isin(pv_ids)]
     density_true = alpha_true / (y_bar[1:] - y_bar[:-1]).numpy()
 
     for epoch in range(config["EPOCHS"]):
         optimizer.zero_grad()
         x_pred_history = model(require_grad_history=True)
 
-        # [MODIFICATION] Intégration de la pondération Colleau dans la MSE des trajectoires
-        if config["METHOD"] == "colleau":
+        if config["METHOD"] == "adaptative":
             loss = torch.mean(weights * (x_pred_history - y_target_history) ** 2)
         else:
             loss = nn.MSELoss()(x_pred_history, y_target_history)
@@ -136,36 +124,38 @@ def train_resnet(config):
         model.alpha.data = project_alpha(model.alpha.data, model.z_bar, model.N)
         loss_history.append(loss.item())
 
-        # Calcul CEE par intervalle pour les graphiques
         if epoch % 10 == 0 or epoch == config["EPOCHS"] - 1:
             with torch.no_grad():
-                alpha_curr = model.alpha.detach().numpy()
+                alpha_curr = model.alpha.detach().numpy().copy()
+                alpha_history.append(alpha_curr)
+
                 _, hist_f, hist_l, _ = model(return_history=True)
                 gaps = np.append(
                     hist_f[-1][1:] - hist_f[-1][:-1], hist_l[-1] - hist_f[-1][-1]
                 )
                 rho_pred = alpha_curr / (gaps + 1e-6)
+
                 cee_history.append(np.mean((rho_pred - density_true) ** 2))
+                mae_history.append(np.mean(np.abs(alpha_curr - alpha_true)))
 
     train_time = time.time() - start_train
-
     start_inf = time.time()
     _, hist_followers, hist_leader, intermediate_rhos = model(return_history=True)
     inf_time = time.time() - start_inf
-
-    # Paramètres : Poids Alpha (nombre de gaps)
-    n_params = model.alpha.numel()
 
     return {
         "model": "ResNet",
         "method": config["METHOD"],
         "loss_train": loss_history,
         "cee_val": cee_history,
+        "mae_val": mae_history,
+        "alpha_history": alpha_history,
+        "alpha_pred": model.alpha.detach().numpy(),
+        "alpha_true": alpha_true,
+        "rho_final_pred": rho_pred,
+        "rho_final_true": density_true,
         "train_time": train_time,
         "inf_time": inf_time,
         "cee_final": cee_history[-1],
-        "params": n_params,
-        "rho_final_pred": rho_pred,
-        "rho_final_true": density_true,
-        "intermediate_rhos": intermediate_rhos,
+        "params": model.alpha.numel(),
     }
