@@ -12,15 +12,15 @@ import torch.optim as optim
 # =====================================================================
 CONFIG = {
     "BASE_DIR": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha",
-    "DATA_PATH": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv",
-    "PORTION_PROBE": 0.2,
-    "EPOCHS": 200,
+    "DATA_PATH": r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\data\reconstruction_modele_imi\traffic_N1000_stop_and_go.csv",
+    "PORTION_PROBE": 0.05,
+    "EPOCHS": 1000,
     "LEARNING_RATE": 0.5,
     "LOSS_POLICY": "continuous",  # Options: "continuous" ou "final_point"
     "N_TOTAL": 1000,
     "L_V": 0.005,
     "V_MAX": 50.0,
-    "PROBE_SELECTION_METHOD": "colleau",  # [AJOUT] Options: "random" ou "colleau" (méthode temporelle)
+    "PROBE_SELECTION_METHOD": "random",  # [AJOUT] Options: "random" ou "colleau" (méthode temporelle)
 }
 CONFIG["RHO_MAX"] = 1.0 / CONFIG["L_V"]
 

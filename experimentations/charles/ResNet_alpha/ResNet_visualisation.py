@@ -7,11 +7,12 @@ import os
 # PARAMÈTRES DE CHARGEMENT
 # =====================================================================
 BASE_DIR = r"C:\Users\charl\OneDrive\Documents\PontsEtChaussees\2A\PROJET\code-projet-IMI\Modelisation-du-trafic-routier\experimentations\charles\ResNet_alpha"
-PORTION_PROBE = 0.2
-EPOCHS = 200
+PORTION_PROBE = 0.05
+EPOCHS = 1000
 LOSS_POLICY = "continuous"
 
-FILENAME = f"ResNet_probe{PORTION_PROBE}_ep{EPOCHS}_loss-{LOSS_POLICY}.pt"
+FILENAME = "ResNet_epochs1000_lr0.5_method-random_traffic_N1000_stop_and_go.pt"
+# FILENAME = f"ResNet_probe{PORTION_PROBE}_ep{EPOCHS}_loss-{LOSS_POLICY}.pt"
 RESULTS_FILE = os.path.join(BASE_DIR, "training_results", FILENAME)
 
 
@@ -68,12 +69,19 @@ def main():
 
     # --- 2. Convergence Alphas ---
     fig2, ax2 = plt.subplots(figsize=(10, 5))
-    sample_size = min(5, n_gaps)
-    colors = plt.cm.Dark2(np.linspace(0, 1, sample_size))  # Palette plus contrastée
+
+    max_epochs = min(200, alpha_history_np.shape[0])  # sécurité si < 200
+    sample_size = min(8, n_gaps)
+
+    colors = plt.cm.Dark2(np.linspace(0, 1, sample_size))
+
+    epochs = np.arange(max_epochs)
 
     for i in range(sample_size):
-        (line,) = ax2.plot(alpha_history_np[:, i], color=colors[i], lw=2)
-        # Pointillés avec la même couleur mais plus fins pour la vérité
+        (line,) = ax2.plot(
+            epochs, alpha_history_np[:max_epochs, i], color=colors[i], lw=2
+        )
+
         ax2.axhline(
             alpha_true[i],
             color=line.get_color(),
@@ -84,14 +92,15 @@ def main():
         )
 
     ax2.set_title(
-        "2. Convergence des paramètres $\\alpha_i$ vers la réalité",
+        "2. Convergence des paramètres $\\alpha_i$ (200 premières epochs)",
         fontsize=14,
         fontweight="bold",
     )
+
     ax2.set_xlabel("Epochs", fontsize=12)
     ax2.set_ylabel("Nb de véhicules par segment", fontsize=12)
 
-    # Nettoyage de la légende pour éviter les doublons
+    # Nettoyage légende
     handles, labels = ax2.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     ax2.legend(
@@ -99,7 +108,7 @@ def main():
     )
 
     fig2.savefig(
-        os.path.join(graphics_dir, "2_alphas_convergence.png"),
+        os.path.join(graphics_dir, "2_alphas_convergence_200epochs.png"),
         dpi=150,
         bbox_inches="tight",
     )

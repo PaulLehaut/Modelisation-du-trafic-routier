@@ -10,12 +10,12 @@ GRAPHICS_DIR = r"experimentations\charles\final\graphics\resnet"
 os.makedirs(GRAPHICS_DIR, exist_ok=True)
 
 DATA_PATH = r"data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv"
-EPOCHS = 2000
+EPOCHS = 1000
 SEED = 42
 
 resnet_config_base = {
     "DATA_PATH": DATA_PATH,
-    "PORTION_PROBE": 0.2,
+    "PORTION_PROBE": 0.05,
     "EPOCHS": EPOCHS,
     "LEARNING_RATE": 0.5,
     "N_TOTAL": 1000,

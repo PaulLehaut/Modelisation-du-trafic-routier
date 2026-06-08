@@ -10,7 +10,7 @@ GRAPHICS_DIR = r"experimentations\charles\final\graphics\pinn"
 os.makedirs(GRAPHICS_DIR, exist_ok=True)
 
 DATA_PATH = r"data\reconstruction_modele_imi\traffic_N1000_rarefaction.csv"
-EPOCHS = 2000
+EPOCHS = 1000
 SEED = 42
 RHO_MAX = 200.0
 
@@ -96,7 +96,7 @@ def plot_pinn_grid_search_ablation(device):
             "data_path": DATA_PATH,
             "mu": c["mu"],
             "gamma": 0.05,
-            "p": 0.20,
+            "p": 0.05,
         }
         cache_path = get_cache_path(c["name"], conf)
         if os.path.exists(cache_path):
@@ -239,7 +239,7 @@ def main():
         "data_path": DATA_PATH,
         "mu": 0.99,
         "gamma": 0.05,
-        "p": 0.20,
+        "p": 0.05,
     }
     name = "PINN_Hybride_Optimal"
     cache_path = get_cache_path(name, pinn_conf)
